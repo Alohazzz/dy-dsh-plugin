@@ -164,7 +164,7 @@ async function publishComment(client, binding, home, section, signal) {
 }
 
 /**
- * @param {{clientFactory?: typeof createClient, home?: string,
+ * @param {{clientFactory?: () => ReturnType<typeof createClient> | Promise<ReturnType<typeof createClient>>, home?: string,
  * startBound?: (input: {id: string, project: string, cwd: string, sessionId?: string}) => Promise<{reference: string, sessionId: string}>,
  * publication?: {preview: Function, publish: Function, transition: Function}}} [options]
  */
@@ -183,7 +183,7 @@ export function createHandler({
     }
 
     try {
-      const client = clientFactory()
+      const client = await clientFactory()
       if (action === 'read') return success(await readIssue(client, await client.find(arg, signal), signal))
 
       const paths = sessionPaths(agent, home)

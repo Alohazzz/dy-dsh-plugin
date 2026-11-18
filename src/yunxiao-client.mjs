@@ -20,19 +20,8 @@ export class YunxiaoHttpError extends Error {
   }
 }
 
-export function createClient({
-  token = process.env.YUNXIAO_TOKEN,
-  organization = process.env.YUNXIAO_ORG_ID,
-  project = process.env.YUNXIAO_PROJECT_ID,
-  fetcher = fetch,
-} = {}) {
-  if (!token?.trim() || !organization) {
-    throw new Error('请在 DSH 宿主环境配置 YUNXIAO_TOKEN 和 YUNXIAO_ORG_ID')
-  }
-  const org = `/oapi/v1/projex/organizations/${segment(organization)}`
-  const itemPath = id => `/${segment(id)}`
-
-  async function call(path, signal = null, method = 'GET', body) {
+function transport(token, fetcher) {
+  return async function call(path, signal = null, method = 'GET', body) {
     const timeout = AbortSignal.timeout(20_000)
     const response = await fetcher(endpoint + path, {
       method,
@@ -45,6 +34,26 @@ export function createClient({
     const raw = await response.text()
     return raw ? JSON.parse(raw) : null
   }
+}
+
+export async function listOrganizations(token, fetcher = fetch) {
+  const call = transport(token, fetcher)
+  return list(await call('/oapi/v1/platform/organizations'), 'organizations')
+}
+
+export function createClient({
+  token = process.env.YUNXIAO_TOKEN,
+  organization = process.env.YUNXIAO_ORG_ID,
+  project = process.env.YUNXIAO_PROJECT_ID,
+  fetcher = fetch,
+} = {}) {
+  if (!token?.trim() || !organization) {
+    throw new Error('请在 DSH 宿主环境配置 YUNXIAO_TOKEN 和 YUNXIAO_ORG_ID')
+  }
+  const org = `/oapi/v1/projex/organizations/${segment(organization)}`
+  const itemPath = id => `/${segment(id)}`
+
+  const call = transport(token, fetcher)
 
   const request = (path, signal, method, body) => call(org + '/workitems' + path, signal, method, body)
   const projectPath = id => org + '/projects/' + segment(id)

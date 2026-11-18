@@ -1,5 +1,5 @@
 import type * as ReactType from 'react'
-import type { Details, Issue, Meta, Option, Plan, PlanResult, Preview } from './contracts.ts'
+import type { ConnectionSettings, Details, Issue, Meta, Option, Plan, PlanResult, Preview } from './contracts.ts'
 
 type Navigation = { openSession(id: string): void }
 type Slots = {
@@ -37,6 +37,44 @@ function dateRange(kind: string): [string, string] {
 const categories: Record<string, string> = { Req: '需求', Bug: '缺陷', Task: '任务' }
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 
+const emptyConditions = {
+  category: '', query: '', mine: false, period: '', from: '', to: '',
+  status: [] as string[], product: [] as string[], version: [] as string[],
+}
+type Selection = typeof emptyConditions & { project: string; workspaceId: string }
+
+function preferenceKey(meta: Meta) {
+  return 'dy-yunxiao:selection:v1:' + JSON.stringify([meta.organization, meta.user])
+}
+
+function restoreSelection(meta: Meta, preferDefault: boolean): Selection {
+  let saved: Partial<Selection> = {}
+  try {
+    saved = JSON.parse(localStorage.getItem(preferenceKey(meta)) || '{}') || {}
+  } catch { /* Use defaults when storage is unavailable. */ }
+  const available = (id: unknown, options: Option[]) =>
+    typeof id === 'string' && (!id || options.some(option => option.id === id))
+  const project = !preferDefault && available(saved.project, meta.projects) ? saved.project! :
+    meta.projects.find(item => item.id === meta.defaultProject)?.id || meta.projects[0]?.id || ''
+  const workspaceId = available(saved.workspaceId, meta.workspaces) ? saved.workspaceId! : meta.workspaces[0]?.id || ''
+  const selection = { ...emptyConditions, project, workspaceId }
+  if (!project || project !== saved.project) return selection
+  for (const key of ['status', 'product', 'version'] as const) {
+    if (Array.isArray(saved[key])) selection[key] = saved[key].filter(id => typeof id === 'string')
+  }
+  selection.mine = saved.mine === true
+  selection.query = typeof saved.query === 'string' ? saved.query : ''
+  selection.category = saved.category && Object.hasOwn(categories, saved.category) ? saved.category : ''
+  selection.period = ['custom', 'week', 'month'].includes(saved.period || '') ? saved.period! : ''
+  if (selection.period === 'custom') {
+    selection.from = typeof saved.from === 'string' ? saved.from : ''
+    selection.to = typeof saved.to === 'string' ? saved.to : ''
+  } else {
+    ;[selection.from, selection.to] = dateRange(selection.period)
+  }
+  return selection
+}
+
 type Modal =
   | { kind: 'discuss' | 'add' | 'create'; issues: Issue[] }
   | { kind: 'start' | 'publish' | 'move'; issue: Issue }
@@ -50,30 +88,72 @@ window.__ModuleLoader__.load({
     function Multi({ title, options, values, change }: {
       title: string; options: Option[]; values: string[]; change(value: string[]): void
     }) {
-      return <details className="dy-yx-multi">
-        <summary>{values.length ? title + ' · ' + values.length : '全部' + title}</summary>
-        <div>{options.length === 0 && <small>暂无可选{title}</small>}
+      const menu = useRef<HTMLDivElement>(null)
+      const trigger = useRef<HTMLButtonElement>(null)
+      const id = React.useId()
+      const [open, setOpen] = useState(false)
+      return <div className="dy-yx-multi" onBlur={event => {
+        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) menu.current?.hidePopover()
+      }}>
+        <button ref={trigger} type="button" popoverTarget={id} aria-expanded={open} aria-controls={id}
+          className="dy-yx-filter-trigger" data-selected={values.length > 0}>
+          {values.length ? title + ' · ' + values.length : '全部' + title}
+        </button>
+        <div id={id} ref={menu} popover="auto" role="group" aria-label={title}
+          onToggle={event => setOpen(event.currentTarget.matches(':popover-open'))}>
+          {options.length === 0 && <small>暂无可选{title}</small>}
           {options.map(item => <label key={item.id}><input type="checkbox" checked={values.includes(item.id)}
-            onChange={event => change(event.target.checked ? [...values, item.id] : values.filter(id => id !== item.id))} />
+            onChange={event => {
+              change(event.target.checked ? [...values, item.id] : values.filter(id => id !== item.id))
+              menu.current?.hidePopover()
+              trigger.current?.focus()
+            }} />
             {item.name}</label>)}
         </div>
-      </details>
+      </div>
+    }
+
+    function Attachment({ file }: { file: Details['files'][number] }) {
+      const viewer = useRef<HTMLDialogElement>(null)
+      const [original, setOriginal] = useState(false)
+      const [open, setOpen] = useState(false)
+      const [failed, setFailed] = useState(false)
+      if (!file.url) return <>{file.name}</>
+      if (!file.image) return <a href={file.url} target="_blank" rel="noreferrer">{file.name}</a>
+      function preview() {
+        setOriginal(false)
+        setFailed(false)
+        setOpen(true)
+        viewer.current?.showModal()
+      }
+      return <>
+        <button type="button" className="dy-yx-image-link" onClick={preview}>{file.name}</button>
+        <button type="button" className="dy-yx-thumbnail" aria-label={'预览 ' + file.name} onClick={preview}>
+          <img className="dy-yx-attachment" src={file.url} alt="" loading="lazy" referrerPolicy="no-referrer" />
+        </button>
+        <dialog ref={viewer} className="dy-yx-viewer" aria-label="图片预览"
+          onCancel={event => event.stopPropagation()} onClose={() => setOpen(false)}>
+          <div className="dy-yx-viewer-head">
+            <strong>{file.name}</strong>
+            <button type="button" disabled={failed} onClick={() => setOriginal(!original)}>{original ? '适应窗口' : '原始尺寸'}</button>
+            <button type="button" autoFocus onClick={() => viewer.current?.close()}>关闭预览</button>
+          </div>
+          <div className="dy-yx-image-stage" data-original={original}>
+            {open && (failed ? <p role="alert">图片加载失败，请关闭预览并刷新议题后重试。</p> :
+              <img src={file.url} alt={file.name} referrerPolicy="no-referrer" onError={() => setFailed(true)} />)}
+          </div>
+        </dialog>
+      </>
     }
 
     function Panel({ ctx }: { ctx: { uiWorkspace: Navigation } }) {
       const [meta, setMeta] = useState<Meta>()
       const [metaError, setMetaError] = useState('')
-      const [project, setProject] = useState('')
-      const [workspaceId, setWorkspace] = useState('')
-      const [category, setCategory] = useState('')
-      const [mine, setMine] = useState(false)
-      const [query, setQuery] = useState('')
-      const [status, setStatus] = useState<string[]>([])
-      const [product, setProduct] = useState<string[]>([])
-      const [version, setVersion] = useState<string[]>([])
-      const [period, setPeriod] = useState('')
-      const [from, setFrom] = useState('')
-      const [to, setTo] = useState('')
+      const [selection, setSelection] = useState<Selection>({ ...emptyConditions, project: '', workspaceId: '' })
+      const { project, workspaceId, category, mine, query, status, product, version, period, from, to } = selection
+      function updateSelection(patch: Partial<Selection>) {
+        setSelection(previous => ({ ...previous, ...patch }))
+      }
       const [opts, setOpts] = useState({ statuses: [] as Option[], versions: [] as Option[], products: [] as string[] })
       const [seenProducts, setSeenProducts] = useState<string[]>([])
       const [optsError, setOptsError] = useState('')
@@ -88,6 +168,7 @@ window.__ModuleLoader__.load({
       const [detailError, setDetailError] = useState('')
       const [marked, setMarked] = useState<Issue[]>([])
       const [modal, setModal] = useState<Modal>()
+      const [settingsOpen, setSettingsOpen] = useState(false)
       const [notice, setNotice] = useState('')
       const [pending, setPending] = useState<Record<string, string>>({})
       const listGeneration = useRef(0)
@@ -97,16 +178,22 @@ window.__ModuleLoader__.load({
       const visible = rows.filter(row => (!product.length || product.includes(row.product)) &&
         ((!from && !to) || (row.deadline && (!from || row.deadline >= from) && (!to || row.deadline <= to))))
 
-      async function connect() {
+      async function connect(preferDefault = false) {
         setMetaError('')
         try {
           const value = await rpc<Meta>('meta')
           setMeta(value)
-          setWorkspace(id => value.workspaces.some(space => space.id === id) ? id : value.workspaces[0]?.id || '')
-          setProject(id => value.projects.some(item => item.id === id) ? id : value.defaultProject || value.projects[0]?.id || '')
+          setSelection(restoreSelection(value, preferDefault))
           refresh(value => value + 1)
         } catch (failure) { setMetaError(errorText(failure)) }
       }
+
+      useEffect(() => {
+        if (!meta || meta.setupError) return
+        try {
+          localStorage.setItem(preferenceKey(meta), JSON.stringify(selection))
+        } catch { /* Keep filtering available when storage is disabled. */ }
+      }, [meta, selection])
 
       useEffect(() => { void connect() }, [])
       useEffect(() => {
@@ -164,8 +251,8 @@ window.__ModuleLoader__.load({
       }, [active, workspaceId, revision])
 
       function reset() {
-        setQuery(''); setCategory(''); setMine(false); setStatus([]); setVersion([]); setProduct([])
-        setPeriod(''); setFrom(''); setTo(''); setMarked([])
+        updateSelection(emptyConditions)
+        setMarked([])
       }
 
       function clearContext() {
@@ -186,41 +273,44 @@ window.__ModuleLoader__.load({
       if (!meta && !metaError) return <main className="dy-yx">正在读取 DSH 工作区与云效配置…</main>
       return <main className="dy-yx">
         <header><div><h1>云效议题</h1><small>{meta?.user ? '已连接 · ' + meta.organization + ' · ' + meta.user : '云效连接待配置'}</small></div>
-          <div className="dy-yx-actions"><button onClick={() => refresh(value => value + 1)}>刷新</button><button onClick={connect}>重新连接</button></div>
+          <div className="dy-yx-actions">
+            <button onClick={() => refresh(value => value + 1)}>刷新</button>
+            <button onClick={() => void connect()}>重新连接</button>
+            <button className={meta?.setupError ? 'dy-yx-primary' : undefined} onClick={() => setSettingsOpen(true)}>连接设置</button>
+          </div>
         </header>
         {(metaError || meta?.setupError) && <div role="alert" className="dy-yx-error">
-          {metaError || meta?.setupError}。请在 DSH Desktop 启动环境配置 <code>YUNXIAO_TOKEN</code> 和 <code>YUNXIAO_ORG_ID</code>，重启后连接。
+          {metaError || meta?.setupError}
         </div>}
-        <div className="dy-yx-bar">
+        <div className="dy-yx-bar dy-yx-context">
           <label>云效项目 <select value={project} onChange={event => {
-            clearContext(); reset(); setOpts({ statuses: [], versions: [], products: [] }); setSeenProducts([]); setProject(event.target.value)
+            clearContext(); reset(); setOpts({ statuses: [], versions: [], products: [] }); setSeenProducts([]); updateSelection({ project: event.target.value })
           }}><option value="">请选择</option>{meta?.projects.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-          <label>目标工作区 <select value={workspaceId} onChange={event => { clearContext(); setWorkspace(event.target.value) }}>
+          <label>目标工作区 <select value={workspaceId} onChange={event => { clearContext(); updateSelection({ workspaceId: event.target.value }) }}>
             <option value="">请选择</option>{meta?.workspaces.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select></label>
           <button disabled={!workspaceId || !project} onClick={() => setModal({ kind: 'create', issues: [] })}>创建计划</button>
         </div>
         {project && <>
-          <div className="dy-yx-bar" aria-label="筛选议题">
-            <select aria-label="议题类型" value={category} onChange={event => setCategory(event.target.value)}>
+          <div className="dy-yx-bar dy-yx-filters" aria-label="筛选议题">
+            <select aria-label="议题类型" value={category} onChange={event => updateSelection({ category: event.target.value })}>
               <option value="">全部类型</option>{Object.entries(categories).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
             </select>
-            <label><input type="checkbox" checked={mine} onChange={event => setMine(event.target.checked)} /> 我负责的</label>
-            <Multi title="状态" options={opts.statuses} values={status} change={setStatus} />
-            <Multi title="产品" options={productOptions.map(name => ({ name, id: name }))} values={product} change={setProduct} />
-            <Multi title="版本" options={opts.versions} values={version} change={setVersion} />
+            <label><input type="checkbox" checked={mine} onChange={event => updateSelection({ mine: event.target.checked })} /> 我负责的</label>
+            <Multi title="状态" options={opts.statuses} values={status} change={status => updateSelection({ status })} />
+            <Multi title="产品" options={productOptions.map(name => ({ name, id: name }))} values={product} change={product => updateSelection({ product })} />
+            <Multi title="版本" options={opts.versions} values={version} change={version => updateSelection({ version })} />
             <select aria-label="计划完成日期" value={period} onChange={event => {
-              setPeriod(event.target.value)
               const [start, end] = dateRange(event.target.value)
-              setFrom(start); setTo(end)
+              updateSelection({ period: event.target.value, from: start, to: end })
             }}>
               <option value="">全部日期</option><option value="week">本周</option><option value="month">本月</option><option value="custom">自定义日期</option>
             </select>
             {period === 'custom' && <>
-              <input aria-label="截止日期起" type="date" value={from} onChange={event => setFrom(event.target.value)} />
-              <input aria-label="截止日期止" type="date" value={to} onChange={event => setTo(event.target.value)} />
+              <input aria-label="截止日期起" type="date" value={from} onChange={event => updateSelection({ from: event.target.value })} />
+              <input aria-label="截止日期止" type="date" value={to} onChange={event => updateSelection({ to: event.target.value })} />
             </>}
-            <input aria-label="编号或标题" placeholder="按编号或标题搜索" value={query} onChange={event => setQuery(event.target.value)} />
+            <input aria-label="编号或标题" placeholder="按编号或标题搜索" value={query} onChange={event => updateSelection({ query: event.target.value })} />
             <button onClick={reset}>清空筛选</button>
           </div>
           {optsError && <div role="alert" className="dy-yx-error">筛选选项加载失败。{optsError} <button onClick={() => refresh(value => value + 1)}>重试</button></div>}
@@ -234,7 +324,10 @@ window.__ModuleLoader__.load({
           <div className="dy-yx-layout" data-detail={Boolean(active)}>
             <section aria-label="议题列表" className="dy-yx-list">
               <div className="dy-yx-list-head">议题列表 <small>{visible.length} 条{more ? ' · 可加载更多' : ''}</small></div>
-              {visible.map(issue => <article key={issue.id} aria-current={active?.id === issue.id} className="dy-yx-row">
+              {visible.map(issue => <article key={issue.id} aria-current={active?.id === issue.id} className="dy-yx-row"
+                onClick={event => {
+                  if (event.target instanceof Element && !event.target.closest('button, a, input')) setActive(issue)
+                }}>
                 <input type="checkbox" aria-label={'勾选 ' + issue.reference} disabled={Boolean(issue.plan || issue.sessionId || issue.id === detail?.id && detail.sessionId)}
                   checked={marked.some(item => item.id === issue.id)}
                   onChange={event => {
@@ -283,8 +376,7 @@ window.__ModuleLoader__.load({
                   {detail.materialsError && <p role="alert">{detail.materialsError}</p>}
                   {detail.files.length > 0 && <><h3>附件与正文图片</h3><ul>
                     {detail.files.map((file, i) => <li key={i}>
-                      {file.url ? <a href={file.url} target="_blank" rel="noreferrer">{file.name}</a> : file.name}
-                      {file.url && file.image && <img src={file.url} alt={file.name} loading="lazy" referrerPolicy="no-referrer" />}
+                      <Attachment file={file} />
                     </li>)}
                   </ul></>}
                 </>}
@@ -292,6 +384,13 @@ window.__ModuleLoader__.load({
             </section>
           </div>
         </>}
+        {settingsOpen && <SettingsDialog close={() => setSettingsOpen(false)} onChange={async () => {
+          clearContext()
+          setOpts({ statuses: [], versions: [], products: [] })
+          setSeenProducts([])
+          setPending({})
+          await connect(true)
+        }} />}
         {modal && <Dialog key={modal.kind} modal={modal} detail={'issue' in modal && detail?.id === modal.issue.id ? detail : undefined} detailError={detailError} meta={meta}
           workspaceId={workspaceId} project={project} close={() => setModal(undefined)} pending={pending}
           setPending={(id, target) => setPending(previous => ({ ...previous, [id]: target }))}
@@ -299,6 +398,163 @@ window.__ModuleLoader__.load({
           onPlan={() => { setMarked([]); refresh(value => value + 1) }}
           onOpenSession={id => { setModal(undefined); refresh(value => value + 1); ctx.uiWorkspace.openSession(id) }} />}
       </main>
+    }
+
+    function SettingsDialog({ close, onChange }: { close(): void; onChange(): Promise<void> }) {
+      const element = useRef<HTMLDialogElement>(null)
+      const [settings, setSettings] = useState<ConnectionSettings>()
+      const [organization, setOrganization] = useState('')
+      const [project, setProject] = useState('')
+      const [token, setToken] = useState('')
+      const [organizations, setOrganizations] = useState<Option[] | undefined>()
+      const [projects, setProjects] = useState<Option[] | undefined>()
+      const [manual, setManual] = useState(false)
+      const [busy, setBusy] = useState('')
+      const [error, setError] = useState('')
+      const [notice, setNotice] = useState('')
+      const [confirmClear, setConfirmClear] = useState(false)
+      const [revision, retry] = useState(0)
+
+      useEffect(() => {
+        const dialog = element.current!
+        dialog.showModal()
+        return () => dialog.close()
+      }, [])
+
+      useEffect(() => {
+        const abort = new AbortController()
+        setError('')
+        rpc<ConnectionSettings>('connectionSettings', {}, abort.signal).then(value => {
+          setSettings(value)
+          setOrganization(value.organization)
+          setProject(value.project)
+        }, failure => {
+          if (!abort.signal.aborted) setError(errorText(failure))
+        })
+        return () => abort.abort()
+      }, [revision])
+
+      async function loadProjects(org: string, selection: string) {
+        setBusy('projects')
+        const next = await rpc<Option[]>('connectionProjects', { token, organization: org })
+        setProjects(next)
+        setProject(next.find(item => item.id === selection)?.id || next[0]?.id || '')
+        if (!next.length) setNotice('该组织下暂无可访问项目。')
+      }
+
+      async function run(action: 'organizations' | 'projects' | 'testConnection' | 'saveConnection' | 'clearConnection') {
+        if (busy) return
+        setBusy(action)
+        setError('')
+        setNotice('')
+        try {
+          if (action === 'organizations') {
+            const next = await rpc<Option[]>('connectionOrganizations', { token })
+            setOrganizations(next)
+            const org = next.length === 1 ? next[0].id : next.find(item => item.id === organization)?.id || ''
+            setOrganization(org)
+            setProjects(undefined)
+            setProject(org === organization ? project : '')
+            if (next.length === 1) await loadProjects(org, org === organization ? project : '')
+            if (!next.length) setNotice('当前 Token 未返回可访问组织。')
+          } else if (action === 'projects') {
+            await loadProjects(organization.trim(), project.trim())
+          } else if (action === 'testConnection') {
+            const result = await rpc<{ user: string; projectCount: number }>(action, { token, organization, project })
+            setNotice(`连接成功 · ${result.user} · ${result.projectCount} 个可访问项目`)
+          } else {
+            await rpc(action, action === 'clearConnection' ? {} : { token, organization, project })
+            setToken('')
+            await onChange()
+            close()
+          }
+        } catch (failure) {
+          setError(errorText(failure))
+        } finally {
+          setBusy('')
+        }
+      }
+
+      function resetFeedback() {
+        setNotice('')
+        setError('')
+        setConfirmClear(false)
+      }
+
+      const hasToken = Boolean(settings && (token.trim() || settings.hasToken))
+      const canSubmit = Boolean(hasToken && organization.trim())
+      function changeOrganization(value: string) {
+        setOrganization(value)
+        setProjects(undefined)
+        setProject('')
+        resetFeedback()
+      }
+      const status = settings?.source === 'saved' ? '已保存 Token。留空继续使用，填入新 Token 即可更换。'
+        : settings?.source === 'env' ? '当前使用环境变量提供的 Token。留空继续使用。' : '需要云效中心版个人访问令牌。'
+      return <dialog className="dy-yx dy-yx-dialog" ref={element} aria-labelledby="dy-yx-settings-title"
+        onCancel={event => { event.preventDefault(); if (!busy) close() }}>
+        <form onSubmit={event => { event.preventDefault(); if (canSubmit && !busy) void run('saveConnection') }}>
+          <h2 id="dy-yx-settings-title">云效连接设置</h2>
+          {!settings && !error && <p role="status">正在读取连接配置…</p>}
+          {settings && <fieldset disabled={Boolean(busy)}>
+            <label>云效 Token<input type="password" name="yunxiaoToken" autoComplete="new-password" spellCheck={false}
+              placeholder={settings.hasToken ? '填写新 Token' : '粘贴个人访问令牌'} maxLength={4096}
+              value={token} onChange={event => {
+                setToken(event.target.value)
+                setOrganizations(undefined)
+                setOrganization(settings.organization)
+                setProjects(undefined)
+                setProject(settings.project)
+                resetFeedback()
+              }} aria-describedby="dy-yx-token-status" /></label>
+            <p id="dy-yx-token-status"><small>{status}</small></p>
+            <div className="dy-yx-actions dy-yx-discovery">
+              <button type="button" disabled={!hasToken} onClick={() => void run('organizations')}>
+                {busy === 'organizations' ? '正在获取组织…' : '获取组织'}
+              </button>
+              <button type="button" onClick={() => setManual(value => !value)}>{manual ? '按名称选择' : '手动填写 ID'}</button>
+            </div>
+            {manual ? <label>组织 ID<input value={organization} maxLength={128} spellCheck={false}
+              onChange={event => changeOrganization(event.target.value)} /></label>
+              : <label>云效组织<select value={organization} disabled={!organizations?.length}
+                onChange={event => changeOrganization(event.target.value)}>
+                <option value="">{organizations?.length ? '请选择组织' : '请先获取组织'}</option>
+                {organization && !organizations?.some(item => item.id === organization) &&
+                  <option value={organization}>{organization}</option>}
+                {organizations?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select></label>}
+            <div className="dy-yx-actions dy-yx-discovery">
+              <button type="button" disabled={!canSubmit} onClick={() => void run('projects')}>
+                {busy === 'projects' ? '正在获取项目…' : '获取项目'}
+              </button>
+            </div>
+            {manual ? <label>默认项目 ID（选填）<input value={project} maxLength={128} spellCheck={false}
+              onChange={event => { setProject(event.target.value); resetFeedback() }} /></label>
+              : <label>默认项目（选填）<select value={project} disabled={!projects?.length}
+                onChange={event => { setProject(event.target.value); resetFeedback() }}>
+                <option value="">{projects?.length ? '暂不指定默认项目' : '请先获取项目'}</option>
+                {project && !projects?.some(item => item.id === project) && <option value={project}>{project}</option>}
+                {projects?.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+              </select></label>}
+            {settings.source === 'saved' && <div className="dy-yx-actions">
+              {confirmClear && <small>移除本地保存的连接设置。已配置环境变量时将恢复使用环境变量。</small>}
+              <button type="button" onClick={() => {
+                if (confirmClear) void run('clearConnection')
+                else setConfirmClear(true)
+              }}>{confirmClear ? '确认清除' : '清除已保存设置'}</button>
+              {confirmClear && <button type="button" onClick={() => setConfirmClear(false)}>取消清除</button>}
+            </div>}
+          </fieldset>}
+          {notice && <p role="status" className="dy-yx-notice">{notice}</p>}
+          {error && <p role="alert" className="dy-yx-error">{error}</p>}
+          {error && !settings && <button type="button" onClick={() => retry(value => value + 1)}>重试读取</button>}
+          <div className="dy-yx-actions">
+            <button type="button" disabled={Boolean(busy)} onClick={close}>关闭</button>
+            <button type="button" disabled={!canSubmit || Boolean(busy)} onClick={() => void run('testConnection')}>{busy === 'testConnection' ? '正在测试…' : '测试连接'}</button>
+            <button type="submit" className="dy-yx-primary" disabled={!canSubmit || Boolean(busy)}>{busy === 'saveConnection' ? '正在保存…' : '保存并连接'}</button>
+          </div>
+        </form>
+      </dialog>
     }
 
     function Dialog(props: {
@@ -323,8 +579,6 @@ window.__ModuleLoader__.load({
       const [target, setTarget] = useState('')
       const [notes, setNotes] = useState('')
       const [clarify, setClarify] = useState(false)
-      const [preset, setPreset] = useState('')
-      const [permission, setPermission] = useState('')
       const targetPending = issue ? pending[issue.id] || detail?.pendingTarget : ''
       const title = { discuss: '发起讨论', add: '添加到计划', create: '创建计划', start: '直接开工',
         publish: '回写预览', move: targetPending ? '回查状态' : '状态流转' }[kind]
@@ -369,7 +623,7 @@ window.__ModuleLoader__.load({
         if (kind === 'start') {
           if (detail?.sessionId) { props.onOpenSession(detail.sessionId); return }
           try {
-            const started = await rpc<{ sessionId: string }>('start', { ...base, notes, clarify, preset: preset || undefined, permission: permission || undefined })
+            const started = await rpc<{ sessionId: string }>('start', { ...base, notes, clarify, preset: 'standard', permission: 'danger-full-access' })
             props.onOpenSession(started.sessionId)
           } catch (error) {
             props.refresh()
@@ -449,20 +703,13 @@ window.__ModuleLoader__.load({
                 {detail && <details><summary>查看原文与附件</summary>
                   <p className="dy-yx-description">{detail.text || '无正文'}</p>
                   <ul>{detail.files.map((file, i) => <li key={i}>
-                    {file.url ? <a href={file.url} target="_blank" rel="noreferrer">{file.name}</a> : file.name}
-                    {file.url && file.image && <img className="dy-yx-attachment" src={file.url} alt={file.name} loading="lazy" referrerPolicy="no-referrer" />}
+                    <Attachment file={file} />
                   </li>)}</ul>
                 </details>}
                 {detail?.preparedSessionId && <button type="button" onClick={() => props.onOpenSession(detail.preparedSessionId!)}>
                   打开已准备会话
                 </button>}
                 {props.detailError && <button type="button" onClick={props.refresh}>重试读取</button>}
-                <label>Agent<select value={preset} onChange={event => setPreset(event.target.value)}>
-                  <option value="">DSH 默认</option>{meta?.presets.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-                </select></label>
-                <label>权限模式<select value={permission} onChange={event => setPermission(event.target.value)}>
-                  <option value="">DSH 默认</option>{meta?.permissions.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-                </select></label>
                 {issue?.category === 'Bug' ? <p>缺陷取证 · 先复现并定位根因</p> :
                   <label className="dy-yx-inline"><input type="checkbox" checked={clarify} onChange={event => setClarify(event.target.checked)} />先澄清需求再执行</label>}
                 <label>发起人补充<textarea value={notes} maxLength={12000} onChange={event => setNotes(event.target.value)} /></label>
@@ -508,7 +755,7 @@ window.__ModuleLoader__.load({
         if (!document.querySelector('link[data-dy-yunxiao]')) {
           const stylesheet = document.createElement('link')
           stylesheet.rel = 'stylesheet'
-          stylesheet.href = '/dy-yunxiao/panel.css'
+          stylesheet.href = '/api/dy-yunxiao/panel.css'
           stylesheet.dataset.dyYunxiao = ''
           document.head.append(stylesheet)
         }

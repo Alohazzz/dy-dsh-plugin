@@ -19,3 +19,5 @@ export type Meta = {
 export type Plan = { id: string; name: string; branch: string; end: string; members: string[] }
 export type Preview = { code: string; sections: string[]; receipts: ({ id: string; time: string } | null)[]; error?: string }
 export type PlanResult = { id: string; result: string; error?: string; retryable?: boolean }
+
+export type ConnectionSettings = { hasToken: boolean; source: 'saved' | 'env' | 'none'; organization: string; project: string }

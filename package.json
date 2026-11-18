@@ -1,6 +1,6 @@
 {
   "name": "dy-dsh-plugin",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "exports": {
@@ -16,6 +16,7 @@
   },
   "scripts": {
     "build": "node build.mjs",
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev.ps1",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "prepack": "npm run build"

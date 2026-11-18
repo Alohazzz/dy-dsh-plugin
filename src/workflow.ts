@@ -48,7 +48,7 @@ function message(error: unknown) {
 
 export function createWorkflow({ home, client, host, branchExists = async (cwd, branch) => {
   await promisify(execFile)('git', ['-C', cwd, 'show-ref', '--verify', '--quiet', 'refs/heads/' + branch])
-} }: { home: string; client: () => Client; host: Host; branchExists?: (cwd: string, branch: string) => Promise<void> }) {
+} }: { home: string; client: () => Client | Promise<Client>; host: Host; branchExists?: (cwd: string, branch: string) => Promise<void> }) {
   const folder = () => mkdir(home, { recursive: true, mode: 0o700 })
   const key = (prefix: string, ...parts: string[]) => join(home, prefix + '-' + digest(...parts) + '.json')
 
@@ -64,7 +64,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
 
   async function start(input: StartInput) {
     if (!input.project) throw new Error('未能识别议题所属云效项目')
-    const api = client()
+    const api = await client()
     const cwd = await realpath(input.cwd)
     const path = await sessionKey(cwd, input, api.organization)
     const launch = () => serial<Binding>(path, async () => {
@@ -137,13 +137,13 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     return input.sessionId ? serial(key('session-launch', input.sessionId), launch) : launch()
   }
 
-  async function bindingFor(cwd: string, input: IssueKey) {
-    const binding: Binding | null = await readJson(await sessionKey(cwd, input, client().organization))
+  async function bindingFor(cwd: string, input: IssueKey, organization?: string) {
+    const binding: Binding | null = await readJson(await sessionKey(cwd, input, organization ?? (await client()).organization))
     return binding?.dispatched || binding?.prepared ? binding : null
   }
 
-  async function preview(cwd: string, input: IssueKey, regenerate = false) {
-    const binding = await bindingFor(cwd, input)
+  async function preview(cwd: string, input: IssueKey, regenerate = false, organization?: string) {
+    const binding = await bindingFor(cwd, input, organization)
     if (!binding) throw new Error('请先开工并绑定会话')
     const path = key('publication', binding.sessionId)
     return serial(path, async () => {
@@ -159,11 +159,11 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
   }
 
   async function publish(cwd: string, input: IssueKey, code: string, sections: string[]) {
-    const binding = await bindingFor(cwd, input)
+    const api = await client()
+    const binding = await bindingFor(cwd, input, api.organization)
     if (!binding) throw new Error('请先开工并绑定会话')
-    const api = client()
     const path = key('publication', binding.sessionId)
-    const current = await preview(cwd, input)
+    const current = await preview(cwd, input, false, api.organization)
     if (current.code !== code) throw new Error('交付稿已变化，请重新预览')
     if (!Array.isArray(sections) || sections.length !== 2 ||
         sections.some(section => typeof section !== 'string' || !section.trim() || Array.from(section).length > 19800)) {
@@ -195,8 +195,8 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     return key('status', api.organization, input.project, input.id)
   }
 
-  async function pendingTransition(input: IssueKey): Promise<{ current: string; target: string } | null> {
-    return readJson(transitionPath(client(), input))
+  async function pendingTransition(input: IssueKey, clientSnapshot?: Client): Promise<{ current: string; target: string } | null> {
+    return readJson(transitionPath(clientSnapshot ?? await client(), input))
   }
 
   async function verifyTransition(api: Client, input: IssueKey, path: string, target: string, resolveMismatch = false) {
@@ -217,7 +217,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
   }
 
   async function checkTransition(input: IssueKey) {
-    const api = client()
+    const api = await client()
     const path = transitionPath(api, input)
     return serial(path, async () => {
       const pending = await readJson(path)
@@ -227,7 +227,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
   }
 
   async function transition(input: IssueKey, current: string, target: string) {
-    const api = client()
+    const api = await client()
     const path = transitionPath(api, input)
     return serial(path, async () => {
       const pending = await readJson(path)
@@ -252,12 +252,12 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     })
   }
 
-  async function planPath(cwd: string, project: string) {
-    return key('plans', client().organization, project, await realpath(cwd))
+  async function planPath(cwd: string, project: string, organization?: string) {
+    return key('plans', organization ?? (await client()).organization, project, await realpath(cwd))
   }
 
-  async function plans(cwd: string, project: string): Promise<Plan[]> {
-    return await readJson(await planPath(cwd, project)) ?? []
+  async function plans(cwd: string, project: string, organization?: string): Promise<Plan[]> {
+    return await readJson(await planPath(cwd, project, organization)) ?? []
   }
 
   async function createPlan(cwd: string, project: string, input: Pick<Plan, 'name' | 'branch' | 'end'>) {
@@ -282,8 +282,8 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
   }
 
   async function addToPlan(cwd: string, project: string, planId: string, ids: string[]) {
-    const api = client()
-    const path = await planPath(cwd, project)
+    const api = await client()
+    const path = await planPath(cwd, project, api.organization)
     const results: { id: string; result: string; error?: string; retryable?: boolean }[] = []
     return serial(path, async () => {
       const all: Plan[] = await readJson(path) ?? []

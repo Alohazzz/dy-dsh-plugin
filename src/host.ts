@@ -1,21 +1,21 @@
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { createClient } from './yunxiao-client.mjs'
+import { createConnectionSettings, type CredentialStore } from './connection-settings.ts'
 import { createHandler, descriptionOf } from './yunxiao.mjs'
 import { createWorkflow, label, projectOf } from './workflow.ts'
 import type { Details, Issue, IssueKey, Meta, Option, Search } from './contracts.ts'
 
 export const name = 'dy-yunxiao'
-export const inject = ['commands', 'webServer', 'connection', 'workspaceRegistry', 'sessionController', 'agentPresets', 'permissionPresets']
-type Request = IncomingMessage
-type Response = ServerResponse
+export const inject = ['commands', 'connection', 'workspaceRegistry', 'sessionController', 'agentPresets', 'permissionPresets', 'credentials']
 type Workspace = { id: string; path: string; title: string }
 type Context = {
+  credentials: CredentialStore
   commands: { register(value: { name: string; description: string; input: { hint: string }; handler: ReturnType<typeof createHandler> }): void }
-  webServer: { register(value: { kind: 'exact'; path: string; handler(req: Request, res: Response): Promise<void> }): void }
-  connection: { requestRejection(req: Request): number | undefined }
+  connection: { fetch: { register(route: {
+    path: string; methods: ('GET' | 'HEAD' | 'POST')[]; requestBody: 'buffered'
+    fetch(req: Request): Promise<Response>
+  }): void } }
   workspaceRegistry: { list(): Workspace[]; get(id: string): Workspace | undefined }
   sessionController: {
     create(input: { sessionId: string; cwd?: string; workspaceId?: string; agentPreset?: string }): Promise<unknown>
@@ -71,23 +71,13 @@ function summarize(item: Workitem, project: string): Issue {
   }
 }
 
-async function json(req: Request) {
-  let size = 0
-  const chunks: Buffer[] = []
-  for await (const chunk of req) {
-    size += chunk.length
-    if (size > 256 * 1024) throw new Error('请求内容过长')
-    chunks.push(chunk)
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'))
-}
-
 export function apply(ctx: Context) {
   const home = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'dy-yunxiao')
   const recentIssues = new Map<string, Issue>()
   const deadlineFields = new Map<string, string>()
+  const settings = createConnectionSettings(ctx.credentials)
   const workflow = createWorkflow({
-    home, client: createClient,
+    home, client: settings.client,
     host: {
       create: ({ sessionId, cwd, workspaceId, agentPreset }) => ctx.sessionController.create({
         sessionId, agentPreset, ...(workspaceId ? { workspaceId } : { cwd }),
@@ -108,7 +98,7 @@ export function apply(ctx: Context) {
     name: 'yunxiao',
     description: '读取、开工、回写和流转云效议题',
     input: { hint: '<read|start|preview|publish|statuses|transition>' },
-    handler: createHandler({ home, startBound: workflow.start, publication: workflow }),
+    handler: createHandler({ home, clientFactory: settings.client, startBound: workflow.start, publication: workflow }),
   })
 
   function workspace(id: string) {
@@ -125,7 +115,7 @@ export function apply(ctx: Context) {
       permissions: (ctx.permissionPresets?.names ?? []).map(id => ({ id, name: ctx.permissionPresets?.optionOf(id).label || id })),
     }
     try {
-      const api = createClient()
+      const api = await settings.client()
       const [projects, user] = await Promise.all([api.projects(), api.currentUser()])
       return { ...result, organization: api.organization, defaultProject: api.project, user: user.name, projects: options(projects) }
     } catch (error) {
@@ -134,7 +124,7 @@ export function apply(ctx: Context) {
   }
 
   async function search(input: Search) {
-    const api = createClient()
+    const api = await settings.client()
     const filters: object[] = []
     function add(fieldIdentifier: string, className: string, value: string[], format = 'list') {
       if (value.length) filters.push({ fieldIdentifier, className, value, format, operator: 'CONTAINS', toValue: null })
@@ -159,7 +149,7 @@ export function apply(ctx: Context) {
     }
     const [items, plans] = await Promise.all([
       api.search(input.project, input.category || 'Req,Bug,Task', [filters], input.page),
-      input.workspaceId ? workflow.plans(workspace(input.workspaceId).path, input.project) : [],
+      input.workspaceId ? workflow.plans(workspace(input.workspaceId).path, input.project, api.organization) : [],
     ])
     const rows = await Promise.all(items.map(async item => {
       const row = summarize(item, input.project)
@@ -168,7 +158,7 @@ export function apply(ctx: Context) {
       recentIssues.set(rowKey, row)
       if (recentIssues.size > 1000) recentIssues.delete(recentIssues.keys().next().value!)
       if (input.workspaceId) {
-        const binding = await workflow.bindingFor(workspace(input.workspaceId).path, row)
+        const binding = await workflow.bindingFor(workspace(input.workspaceId).path, row, api.organization)
         if (binding?.dispatched) row.sessionId = binding.sessionId
       }
       return row
@@ -177,10 +167,10 @@ export function apply(ctx: Context) {
   }
 
   async function detail(input: IssueKey & { workspaceId: string }): Promise<Details> {
-    const api = createClient()
+    const api = await settings.client()
     const item = await api.get(input.id)
     if (projectOf(item) && projectOf(item) !== input.project) throw new Error('议题不属于当前云效项目')
-    const binding = input.workspaceId ? await workflow.bindingFor(workspace(input.workspaceId).path, input) : null
+    const binding = input.workspaceId ? await workflow.bindingFor(workspace(input.workspaceId).path, input, api.organization) : null
     const source = descriptionOf(item)
     const text = source.replace(/<\/?(?:div|p|li|br|h[1-6])\b[^>]*>/gi, '\n').replace(/<[^>]*>/g, '')
       .replace(/&(amp|nbsp|lt|gt|quot|#39);/g, (_match: string, key: string) => ({ amp: '&', nbsp: ' ', lt: '<', gt: '>', quot: '"', '#39': "'" })[key] || '')
@@ -206,13 +196,27 @@ export function apply(ctx: Context) {
         materialsError = '部分正文图片无法读取，可在云效查看'
       }
     }
-    return { ...summarize(item, input.project), text, files, materialsError, sessionId: binding?.dispatched ? binding.sessionId : undefined, preparedSessionId: binding?.prepared && !binding.dispatched ? binding.sessionId : undefined, pendingTarget: (await workflow.pendingTransition(input))?.target }
+    return { ...summarize(item, input.project), text, files, materialsError, sessionId: binding?.dispatched ? binding.sessionId : undefined, preparedSessionId: binding?.prepared && !binding.dispatched ? binding.sessionId : undefined, pendingTarget: (await workflow.pendingTransition(input, api))?.target }
   }
 
   const methods = {
     meta, search, detail,
+    connectionSettings: settings.describe,
+    connectionOrganizations: settings.organizations,
+    connectionProjects: settings.projects,
+    testConnection: settings.test,
+    async saveConnection(input: Parameters<typeof settings.save>[0]) {
+      await settings.save(input)
+      deadlineFields.clear()
+      recentIssues.clear()
+    },
+    async clearConnection() {
+      await settings.clear()
+      deadlineFields.clear()
+      recentIssues.clear()
+    },
     async filters({ project }: IssueKey) {
-      const values = await createClient().filters(project)
+      const values = await (await settings.client()).filters(project)
       const deadlines = [...new Set<string>(values.fields.filter(field => field.name === '计划完成时间').map(field => field.id).filter(Boolean))]
       if (deadlines.length === 1) deadlineFields.set(project, deadlines[0])
       else deadlineFields.delete(project)
@@ -224,7 +228,7 @@ export function apply(ctx: Context) {
     async start(input: IssueKey & { workspaceId: string; notes: string; clarify: boolean; preset?: string; permission?: string }) {
       const target = workspace(input.workspaceId)
       if (input.permission && !ctx.permissionPresets?.names.includes(input.permission)) throw new Error('指定权限不可用')
-      const row = recentIssues.get(JSON.stringify([createClient().organization, input.project, input.id]))
+      const row = recentIssues.get(JSON.stringify([(await settings.client()).organization, input.project, input.id]))
       const result = await workflow.start({
         id: input.id, project: input.project, cwd: target.path, workspaceId: target.id,
         preset: input.preset, permission: input.permission, notes: input.notes, clarify: input.clarify,
@@ -239,7 +243,7 @@ export function apply(ctx: Context) {
       return workflow.publish(workspace(input.workspaceId).path, input, input.code, input.sections)
     },
     async statuses(input: IssueKey) {
-      const api = createClient()
+      const api = await settings.client()
       const issue = await api.get(input.id)
       if (projectOf(issue) && projectOf(issue) !== input.project) throw new Error('议题不属于当前云效项目')
       return { current: { id: issue.status?.id, name: label(issue.status) }, options: options(await api.statuses(input.id)) }
@@ -260,32 +264,32 @@ export function apply(ctx: Context) {
     },
   }
 
-  ctx.webServer.register({
-    kind: 'exact', path: '/api/dy-yunxiao',
-    async handler(req, res) {
-      const rejection = ctx.connection.requestRejection(req)
-      res.setHeader('Content-Type', 'application/json; charset=utf-8')
-      res.setHeader('Cache-Control', 'no-store')
-      if (rejection || req.method !== 'POST' || !req.headers['content-type']?.startsWith('application/json')) {
-        res.statusCode = rejection || 405
-        res.end(JSON.stringify({ error: '请从已连接的 DSH 面板访问' }))
-        return
+  const noStore = { 'Cache-Control': 'no-store' }
+  ctx.connection.fetch.register({
+    path: '/api/dy-yunxiao', methods: ['POST'], requestBody: 'buffered',
+    async fetch(req) {
+      if (req.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+        return Response.json({ error: '云效请求需要 JSON 内容' }, { status: 415, headers: noStore })
       }
       try {
-        const { method, input } = await json(req)
+        const bytes = await req.arrayBuffer()
+        if (bytes.byteLength > 256 * 1024) throw new Error('请求内容过长')
+        const { method, input } = JSON.parse(new TextDecoder().decode(bytes))
         if (typeof method !== 'string' || !Object.hasOwn(methods, method)) throw new Error('未知云效操作')
-        res.end(JSON.stringify({ value: await methods[method as keyof typeof methods](input) }))
+        const value = await methods[method as keyof typeof methods](input)
+        return Response.json({ value: value ?? null }, { headers: noStore })
       } catch (error) {
-        res.statusCode = 400
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : '操作失败' }))
+        return Response.json({ error: error instanceof Error ? error.message : '操作失败' }, { status: 400, headers: noStore })
       }
     },
   })
-  ctx.webServer.register({
-    kind: 'exact', path: '/dy-yunxiao/panel.css',
-    async handler(_req, res) {
-      res.setHeader('Content-Type', 'text/css; charset=utf-8')
-      res.end(await readFile(new URL('./panel.css', import.meta.url)))
+  ctx.connection.fetch.register({
+    path: '/api/dy-yunxiao/panel.css', methods: ['GET', 'HEAD'], requestBody: 'buffered',
+    async fetch(req) {
+      const content = await readFile(new URL('./panel.css', import.meta.url), 'utf8')
+      return new Response(req.method === 'HEAD' ? null : content, {
+        headers: { ...noStore, 'Content-Type': 'text/css; charset=utf-8' },
+      })
     },
   })
 }

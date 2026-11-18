@@ -10,7 +10,7 @@
 
 ```powershell
 $desktopCli = Join-Path $env:LOCALAPPDATA 'Programs/DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd'
-$bundle = (Resolve-Path './dy-dsh-plugin-0.1.0.tgz').Path
+$bundle = (Resolve-Path './dy-dsh-plugin-0.1.5.tgz').Path
 & $desktopCli --version
 & $desktopCli plugin --profile desktop add $bundle
 ```
@@ -21,19 +21,14 @@ $bundle = (Resolve-Path './dy-dsh-plugin-0.1.0.tgz').Path
 
 ## 云效连接
 
-首版接入云效中心版。DSH Desktop 进程需能读取 `YUNXIAO_TOKEN`（个人访问令牌）和 `YUNXIAO_ORG_ID`（组织 ID）。可额外设置 `YUNXIAO_PROJECT_ID`，用作面板默认项目和斜杠命令按显示编号查询的项目。
+接入云效中心版。在「云效议题」页面右上角打开「连接设置」，填写个人访问令牌后点击「获取组织」，选好组织再点击「获取项目」，按名称选择默认项目。只有一个组织时会自动选中并获取项目。也可展开「手动填写 ID」。
 
-建议首次验证使用专门的测试议题。设置环境变量后完全退出旧实例，再从同一 PowerShell 启动 Desktop。以下命令将令牌留在启动进程的环境中。
+- 「测试连接」检查当前表单并显示账号和可访问项目数。
+- 「保存并连接」先验证，再保存至 DSH 本机凭据存储并刷新项目。连接设置保存后即时生效。
+- 重新打开设置时，Token 输入框为空。留空可继续使用现有令牌，填入新令牌可更换。验证失败时保留原配置。
+- 「清除已保存设置」可移除插件保存的本地凭据。已有的宿主环境变量 `YUNXIAO_TOKEN`、`YUNXIAO_ORG_ID`、`YUNXIAO_PROJECT_ID` 会作为回退。
 
-```powershell
-$env:YUNXIAO_TOKEN = Read-Host '云效个人访问令牌' -MaskInput
-$env:YUNXIAO_ORG_ID = Read-Host '云效组织 ID'
-$desktopApp = Join-Path $env:LOCALAPPDATA 'Programs/DeepSeek Harness/DeepSeek Harness.exe'
-Start-Process -FilePath $desktopApp
-Remove-Item Env:YUNXIAO_TOKEN
-```
-
-令牌需要读取项目、工作项、附件及工作流的权限，并在回写阶段具备评论和修改工作项的权限。预览确认后才执行相应的云效写入。
+获取组织需要组织管理的组织读取权限。令牌还需读取项目、工作项、附件及工作流。回写时也需要评论及修改工作项的权限。首次验证建议使用专用测试议题。
 
 ## 斜杠命令
 
@@ -60,4 +55,4 @@ npm test
 npm pack
 ```
 
-`npm pack` 生成可本地安装的 `dy-dsh-plugin-0.1.0.tgz`。开发调试也可用兼容运行时的 `web` profile 安装该包。
+`npm pack` 生成可本地安装的 `dy-dsh-plugin-0.1.5.tgz`。开发调试也可用兼容运行时的 `web` profile 安装该包。

@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>云效议题 · DSH Web 原型</title>
+<!-- 比较列表分栏、工作流看板、单项处理三种操作路径。原型使用模拟数据，刷新复位。 -->
+<style>
+:root{color-scheme:light;--bg:#f6f7f9;--surface:#fff;--ink:#202935;--muted:#606d7c;--line:#dce1e8;--accent:#365ecc;--selected:#edf2ff;--success:#157753;--wait:#a76b13;--shadow:0 12px 50px #192a4029}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#181c22;--surface:#21272e;--ink:#e4e9ef;--muted:#abb6c4;--line:#39424c;--accent:#96b1ff;--selected:#293752;--success:#77cba8;--wait:#edb970;--shadow:0 12px 50px #0007}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 Inter,"Microsoft YaHei UI",system-ui,sans-serif}main{max-width:1600px;margin:auto;padding:26px clamp(14px,3vw,46px) 88px}header,.bar,.actions,.spread,.switch{display:flex;align-items:center;gap:10px}.spread{justify-content:space-between}.crumb,small,.muted{color:var(--muted)}.crumb{font-size:12px;letter-spacing:.04em}h1{font-size:30px;letter-spacing:-1px;margin:10px 0 18px}h2{font-size:20px;line-height:1.45;margin:12px 0}h3{font-size:14px;margin:22px 0 6px}p{margin:5px 0 14px}button,input,select,textarea{font:inherit;color:inherit;border:1px solid var(--line);border-radius:7px;background:var(--surface);padding:7px 11px}button{cursor:pointer}button:hover:enabled,button:focus-visible{border-color:var(--accent)}button:disabled{opacity:.5;cursor:default}.primary{background:#355dcb;color:white;border-color:#355dcb}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}.bar{flex-wrap:wrap;margin-bottom:14px}.bar input{min-width:150px;width:min(320px,100%)}.count{margin-left:auto}.layout{display:grid;gap:15px;align-items:start}.a{grid-template-columns:minmax(300px,.95fr) minmax(340px,1.05fr)}.pane,.detail,.lane,.focus{background:var(--surface);border:1px solid var(--line);border-radius:10px;overflow:hidden}.panehead,.lanehead{background:var(--bg);border-bottom:1px solid var(--line);padding:10px 16px;font-weight:600}.row{display:block;border:0;border-radius:0;border-bottom:1px solid var(--line);width:100%;padding:13px 16px;text-align:left}.row:last-child{border-bottom:0}.row[aria-pressed=true]{background:var(--selected);box-shadow:inset 3px 0 var(--accent)}.row b{display:block;font-size:14px;margin:4px 0}.mono{font:12px/1.6 Consolas,monospace;color:var(--muted)}.status{color:var(--accent);font-size:12px;white-space:nowrap}.status:before{content:'●';margin-right:5px}.s0{color:var(--wait)}.s3{color:var(--success)}.detail{padding:22px 24px}.metadata{display:flex;gap:20px;flex-wrap:wrap;padding:12px 0;border-block:1px solid var(--line);margin:16px 0}.metadata small{display:block}.actions{flex-wrap:wrap;margin-top:20px}.log{padding-left:18px;color:var(--muted)}.board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.lane .row{margin:8px;width:calc(100% - 16px);border:1px solid var(--line);border-radius:6px}.focus{max-width:900px;margin:auto}.focus .detail{border:0}.focus .spread{padding:10px 16px}.focus select{max-width:64%}.switch{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#253248;color:white;border-radius:30px;padding:5px 8px;box-shadow:var(--shadow);white-space:nowrap;font-size:13px}.switch button{background:transparent;color:white;border:0;font-size:17px;padding:2px 10px}.empty{padding:24px;text-align:center;color:var(--muted)}dialog{color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:12px;width:min(570px,94vw);max-height:86vh;padding:24px;box-shadow:var(--shadow)}dialog::backdrop{background:#17223666}dialog h2{margin-top:0}label.field{display:block;margin:12px 0}label.field :is(input,select,textarea){display:block;width:100%;margin-top:4px}textarea{resize:vertical;min-height:75px}.toast{color:var(--success);min-height:1.5em}.board+.detail{margin-top:15px}.tag{font-size:12px;background:var(--selected);color:var(--accent);border-radius:4px;padding:2px 7px}.pane{max-height:calc(100vh - 230px);overflow:auto}.panehead{position:sticky;top:0}.detail p,.row b{overflow-wrap:anywhere}.cardline{display:flex;align-items:center;gap:8px}
+@media(max-width:760px){main{padding:14px 12px 72px}.a{grid-template-columns:1fr}.pane{max-height:235px}.detail{padding:16px}.board{grid-template-columns:repeat(2,minmax(0,1fr))}.count{margin-left:0}.bar{gap:6px}.metadata{gap:12px}.switch{bottom:7px}}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:12px}.summary{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px}.summary p{margin:4px 0}.scenario{display:block;margin:14px 0 2px;color:var(--muted);font-size:13px}.scenario input{vertical-align:middle}dialog [role=alert]{color:var(--wait)}textarea[readonly]{background:var(--bg)}@media(max-width:500px){.pair{grid-template-columns:1fr;gap:0}}
+.filter{position:relative}.filter summary{cursor:pointer;border:1px solid var(--line);background:var(--surface);padding:7px 10px;border-radius:7px}.filter section{position:absolute;z-index:4;background:var(--surface);min-width:160px;border:1px solid var(--line);border-radius:7px;box-shadow:var(--shadow);padding:10px}.filter label{display:block;padding:3px}.record{display:grid;grid-template-columns:26px 1fr;border-bottom:1px solid var(--line);padding:4px 8px}.record .row{width:100%;margin:0}.record input{align-self:start;margin-top:17px}.links{grid-column:2;display:flex;flex-wrap:wrap;gap:8px;align-items:center}.links button{font-size:12px;color:var(--accent);padding:3px 5px;border:0}.links small{overflow-wrap:anywhere}.board{grid-template-columns:repeat(auto-fit,minmax(min(210px,100%),1fr))}.bar button[aria-pressed=true]{background:var(--selected);color:var(--accent)}.bar label{color:var(--muted)}
+.bar input[type=checkbox]{min-width:0;width:auto}.bar input[type=date]{width:145px;min-width:0}.filter[open]{z-index:6}.filter[open] summary{border-color:var(--accent)}.bar:has(#deadline){position:relative;z-index:2}
+</style>
+<main><div class="spread"><span class="crumb">DeepSeek Harness　/　项目协作　/　云效</span><span class="tag">交互原型 · 模拟数据</span></div><h1>云效议题</h1>
+<div class="bar"><label>云效项目 <select id="project"><option>Hsp 2.0</option><option>医技协同</option></select></label><select id="type" aria-label="议题类型"><option>全部类型</option><option>需求</option><option>缺陷</option><option>任务</option></select><button id="create" class="count primary">＋ 创建计划</button></div>
+<div class="bar"><button id="mine" aria-pressed="false">我负责的</button><details class="filter" id="state"></details><details class="filter" id="product"></details><details class="filter" id="version"></details><select id="deadline" aria-label="计划完成时间"><option>全部日期</option><option>本周</option><option>本月</option><option>自定义</option></select><span hidden id="range"><input type="date" id="from" aria-label="起始日期"> 至 <input type="date" id="to" aria-label="结束日期"></span><input type="search" id="q" aria-label="搜索议题" placeholder="搜索议题编号或标题"><button id="clear">重置筛选</button><span id="count" class="muted count"></span></div>
+<div class="bar"><label>导入到项目 <select id="dest"><option>his-web</option><option>his-service</option></select></label><button id="discussBatch" hidden>发起讨论</button><button id="batch" disabled>所选议题加到计划</button><small id="selection"></small></div>
+<dialog id="discussDialog" aria-labelledby="discussTitle"><h2 id="discussTitle">发起讨论</h2><p id="discussProject"></p><ol id="discussItems"></ol><p class="muted">讨论工作流待定。</p><form method="dialog"><button>返回议题</button></form></dialog>
+<dialog id="planDialog"><form id="planForm"><h2 id="planTitle"></h2><div id="planFields"></div><p id="planError" role="alert"></p><div class="actions"><button type="button" id="planCancel">取消</button><button class="primary" id="savePlan">确认</button></div></form></dialog>
+<div id="content"></div><div id="notice" role="status" class="toast"></div></main>
+<nav class="switch" aria-label="原型方案"><button id="prev" aria-label="上一个方案">←</button><span id="variant"></span><button id="next" aria-label="下一个方案">→</button></nav>
+<dialog id="modal" aria-labelledby="modalTitle"><form id="form"><h2 id="modalTitle"></h2><p id="subject" class="muted"></p><div id="fields"></div><div class="actions"><button type="button" id="cancel">取消</button><button class="primary" id="confirm">确认</button></div></form></dialog>
+<script>
+const el=id=>document.getElementById(id);
+const statuses=['待开发','开发中','待验证','已完成','已确认','待确认'];
+const records=[
+['结算明细导出时保留筛选条件','需求','林澄',0,'导出结算明细时沿用页面的科室和日期范围，并在文件表头展示查询条件。','选择两个科室并限定日期，导出文件的记录数与列表一致。'],
+['修复跨日排班结束时间显示异常','缺陷','周文',1,'夜班跨越零点时，结束时间仍显示为开始当天。','核对跨日夜班和当日白班两组样例。'],
+['增加退费申请的审批记录','需求','陈宁',2,'在退费申请详情中按时间展示审批人、意见和结果。','连续提交两次审批意见后，按时间顺序展示。'],
+['统一门诊发票打印模板','任务','林澄',0,'整理打印模板的页边距和字号。','在预览与打印结果中核对页尾信息。'],
+['切换院区后刷新科室列表','缺陷','苏禾',0,'切换院区时清空原科室并加载新院区的可选项。','两个院区往返切换时检查默认选项。'],
+['处方审核支持按药品名称查询','需求','周文',3,'在审核列表中按药品通用名查询。','输入完整名称和部分名称分别核对结果。'],
+['补充库存盘点差异摘要','需求','陈宁',1,'在盘点单详情显示账面与实盘数量差异。','检查零差异与负差异两组数据。']
+].map(([title,type,owner,s,desc,accept],i)=>({id:'HSP-'+(2086-i),title,type,owner,s,desc,accept,run:i===2?'草稿就绪':'尚未开始',workspace:i===2?'his-web':'',log:[],comments:[]}));
+const names=['列表分栏','状态看板','逐条处理'], keys=['A','B','C'];
+let v=Math.max(0,keys.indexOf(new URL(location.href).searchParams.get('variant'))), active=records[0], mode='';
+const escape=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const chosen=new Set(), plans=[{name:'门诊交付',dest:'his-web',branch:'feature/outpatient',end:'2026-11-27'}];
+const dateKey=d=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
+const today=new Date();today.setHours(0,0,0,0);
+records.forEach((r,i)=>{const day=new Date(today);day.setDate(day.getDate()+[-2,1,4,10,0,-9,20][i]);Object.assign(r,{deadline:dateKey(day),project:i===6?'医技协同':'Hsp 2.0',product:['临床信息系统','门诊系统'][i%2],version:i%2?'2.1':'2.0'});if(i===0)r.s=4;if(i===4)r.s=5});
+const filters={state:['状态',statuses],product:['产品',[...new Set(records.map(x=>x.product))]],version:['版本',['2.0','2.1']]};
+function values(id){return [...el(id).querySelectorAll('input:checked')].map(x=>x.value)}
+for(const [id,[title,opts]] of Object.entries(filters)){
+  el(id).innerHTML='<summary>全部'+title+'</summary><section>'+opts.map(x=>'<label><input type="checkbox" value="'+x+'"> '+x+'</label>').join('')+'</section>';
+  el(id).onchange=()=>{filterLabels();render()};
+  el(id).ontoggle=()=>{if(el(id).open)for(const other of Object.keys(filters))if(other!==id)el(other).open=false};
+}
+function filterLabels(){for(const [id,[title]] of Object.entries(filters)){const vals=values(id);el(id).querySelector('summary').textContent=vals.length?title+'：'+vals.join('、'):'全部'+title}}
+function dateMatches(date){const period=el('deadline').selectedIndex;
+ if(period===0)return true;
+ if(period===3)return (!el('from').value||date>=el('from').value)&&(!el('to').value||date<=el('to').value);
+ if(period===2)return date.startsWith(dateKey(today).slice(0,7));
+ const mon=new Date(today);mon.setDate(mon.getDate()-(mon.getDay()+6)%7);const sun=new Date(mon);sun.setDate(mon.getDate()+6);
+ return date>=dateKey(mon)&&date<=dateKey(sun);
+}
+function visible(){return records.filter(r=>r.project===el('project').value&&(r.id+r.title).toLowerCase().includes(el('q').value.trim().toLowerCase())&&(!el('type').selectedIndex||r.type===el('type').value)&&(el('mine').getAttribute('aria-pressed')==='false'||r.owner==='林澄')&&Object.keys(filters).every(id=>!values(id).length||values(id).includes(id==='state'?statuses[r.s]:r[id]))&&dateMatches(r.deadline))}
+function badge(r){return '<span class="status s'+r.s+'">'+statuses[r.s]+'</span>'}
+function planButton(r){return r.plan?'<small>在计划 '+escape(r.plan.name)+'</small>':'<button data-plan="'+r.id+'">加到计划</button>'}
+function discussionButton(r){
+ return r.session || r.plan || r.check || chosen.size ? '' : '<button data-discuss="'+r.id+'">发起讨论</button>';
+}
+function openDiscussion(items){
+ el('discussProject').textContent='目标项目 · '+el('dest').value+'　已选 '+items.length+' 项';
+ el('discussItems').replaceChildren(...items.map(r=>{
+   const item=document.createElement('li');
+   item.textContent=r.id+' · '+r.title;
+   return item;
+ }));
+ el('discussDialog').showModal();
+}
+function selectedItems(){return Array.from(chosen,id=>records.find(r=>r.id===id))}
+function row(r){return '<div class="record"><input type="checkbox" aria-label="勾选 '+r.id+'" data-check="'+r.id+'" '+(chosen.has(r.id)?'checked ':'')+(r.session||r.plan||r.check?'disabled':'')+'><button class="row" data-id="'+r.id+'" aria-pressed="'+(r===active)+'"><span class="spread"><span class="mono">'+r.id+' · '+r.type+'</span>'+badge(r)+'</span><b>'+r.title+'</b><small>'+r.product+' · '+r.owner+' · 截止 '+r.deadline+(r.s!==3&&r.deadline<dateKey(today)?'（已逾期）':'')+'</small></button><div class="links">'+discussionButton(r)+'<button data-move="'+r.id+'">'+(r.check?'回查状态':'状态流转')+'</button>'+planButton(r)+'</div></div>'}
+function detail(r){const ready=r.run==='草稿就绪';return '<article class="detail"><div class="spread"><span class="mono">'+r.id+'　/　'+r.type+'</span>'+badge(r)+'</div><h2>'+r.title+'</h2><div class="metadata"><div><small>项目</small>'+r.project+'</div><div><small>负责人</small>'+r.owner+'</div><div><small>执行状态</small>'+r.run+'</div>'+(r.workspace?'<div><small>绑定工作区</small>'+r.workspace+'</div>':'')+'</div><h3>议题描述</h3><p>'+r.desc+'</p><h3>验收条件</h3><p>'+r.accept+'</p><div class="actions">'+(r.session?'<button class="primary" data-op="session">返回绑定会话</button>':'<button class="primary" data-op="start" '+(r.s===3?'disabled':'')+'>开始执行</button>')+'<button data-op="write" '+(!ready&&r.run!=='已回写'?'disabled':'')+'>'+(r.failed===1?'重试回写':r.run==='已回写'?'查看回执':'回写预览')+'</button><button data-op="move">'+(r.check?'回查状态':'状态流转')+'</button>'+planButton(r)+'</div><h3>活动记录</h3><ul class="log">'+(r.log.length?r.log.map(x=>'<li>'+escape(x)+'</li>').join(''):'<li>议题已载入工作区</li>')+'</ul>'+r.comments.map(([k,val])=>'<h3>'+k+'</h3><p style="white-space:pre-wrap">'+escape(val)+'</p>').join('')+'</article>'}
+function render(){const list=visible();for(const id of chosen)if(!list.some(r=>r.id===id&&!r.session&&!r.plan&&!r.check))chosen.delete(id);el('batch').disabled=!chosen.size;el('discussBatch').hidden=!chosen.size;el('selection').textContent=chosen.size?'已选 '+chosen.size+' 条':'';if(!list.includes(active)) active=list[0];el('variant').textContent='方案 '+keys[v]+' · '+names[v];el('count').textContent=list.length+' 条议题';let html='';
+if(!active)html='<section class="pane empty">没有匹配的议题　<button data-op="reset">清除筛选</button></section>';
+else if(v===0)html='<div class="layout a"><section class="pane"><div class="panehead">议题列表</div>'+list.map(row).join('')+'</section>'+detail(active)+'</div>';
+else if(v===1)html='<div class="board">'+statuses.map((s,i)=>'<section class="lane"><div class="lanehead">'+s+'　'+list.filter(r=>r.s===i).length+'</div>'+(list.filter(r=>r.s===i).map(row).join('')||'<div class="empty">暂无议题</div>')+'</section>').join('')+'</div>'+detail(active);
+else html='<section class="focus"><div class="spread"><button data-op="back" aria-label="上一条">‹</button><select id="queue" aria-label="选择待处理议题">'+list.map(r=>'<option value="'+r.id+'" '+(r===active?'selected':'')+'>'+r.id+' · '+r.title+'</option>').join('')+'</select><button data-op="forward" aria-label="下一条">›</button></div>'+detail(active)+'</section>';
+el('content').innerHTML=html;
+if(v===2&&active){
+ const actions=el('content').querySelector('.detail .actions');
+ actions.insertAdjacentHTML('beforeend',discussionButton(active));
+ const pick=document.createElement('input');
+ pick.type='checkbox';pick.dataset.check=active.id;pick.checked=chosen.has(active.id);
+ pick.disabled=Boolean(active.session||active.plan||active.check);
+ const label=document.createElement('label');label.append(pick,' 勾选 '+active.id);
+ actions.prepend(label);
+}
+if(el('queue'))el('queue').onchange=e=>choose(e.target.value)}
+function choose(id){active=records.find(r=>r.id===id);el('notice').textContent='';render()}
+function cycle(n){v=(v+n+3)%3;const url=new URL(location.href);url.searchParams.set('variant',keys[v]);history.replaceState(null,'',url);render()}
+el('prev').onclick=()=>cycle(-1);el('next').onclick=()=>cycle(1);
+onkeydown=e=>{if(el('modal').open||el('discussDialog').open||el('planDialog').open||e.target.closest('input,select,textarea,[contenteditable=true]'))return;if(['ArrowLeft','ArrowRight'].includes(e.key)){e.preventDefault();cycle(e.key==='ArrowLeft'?-1:1)}};
+function resetFilters(){el('q').value='';el('type').selectedIndex=el('deadline').selectedIndex=0;el('range').hidden=true;el('from').value=el('to').value='';el('mine').setAttribute('aria-pressed','false');for(const id of Object.keys(filters))el(id).querySelectorAll('input').forEach(x=>x.checked=false);filterLabels();render()}
+el('clear').onclick=resetFilters;
+el('mine').onclick=()=>{el('mine').setAttribute('aria-pressed',el('mine').getAttribute('aria-pressed')==='false');render()};
+for(const id of ['q','type','project','deadline','from','to','dest'])el(id).oninput=()=>{el('range').hidden=el('deadline').selectedIndex!==3;el('notice').textContent='';render()};
+let pendingItems=[];
+function planDialog(items){
+ pendingItems=items;const dest=el('dest').value;
+ el('planTitle').textContent=items.length?'添加到计划':'创建计划';el('planError').textContent='';
+ const candidates=plans.filter(p=>p.dest===dest);
+ el('planFields').innerHTML='<p>目标开发项目 · '+dest+'</p>'+(items.length?
+ '<p>'+items.map(r=>r.id+' '+r.title).join('<br>')+'</p>'+field('目标计划',candidates.length?'<select id="planChoice">'+candidates.map(p=>'<option value="'+plans.indexOf(p)+'">'+escape(p.name)+' · '+escape(p.end)+'</option>').join('')+'</select>':'<button type="button" id="newInline">创建此项目的第一个计划</button>')+'<p class="muted">加入后归属该计划。已待开发的议题仅补归属，其余议题同步为待开发，负责人设为当前用户。</p>':
+ field('计划名称','<input id="planName" required maxlength="64">')+field('源分支','<input id="branch" required placeholder="feature/outpatient">')+field('计划完成日期','<input type="date" id="endDate" required>'));
+ el('savePlan').disabled=items.length>0&&!candidates.length;
+ if(el('newInline'))el('newInline').onclick=()=>{const keep=items;planDialog([]);el('planDialog')._resume=keep};
+ if(!el('planDialog').open)el('planDialog').showModal()
+}
+el('create').onclick=()=>planDialog([]);
+el('batch').onclick=()=>planDialog(selectedItems());
+el('discussBatch').onclick=()=>openDiscussion(selectedItems());
+el('planCancel').onclick=()=>el('planDialog').close();
+el('planDialog').onclose=()=>delete el('planDialog')._resume;
+el('planForm').onsubmit=e=>{e.preventDefault();const dest=el('dest').value;
+ if(!pendingItems.length){const name=el('planName').value.trim(),branch=el('branch').value.trim();if(!name||!branch||plans.some(p=>p.dest===dest&&(p.name===name||p.branch===branch))){el('planError').textContent='请填写唯一的计划名和源分支';return}plans.push({name,branch,end:el('endDate').value,dest});el('notice').textContent='已创建计划 '+name;const resume=el('planDialog')._resume;if(resume){delete el('planDialog')._resume;planDialog(resume);return}}
+ else{const plan=plans[Number(el('planChoice').value)];for(const r of pendingItems){if(r.plan||r.check)continue;r.plan=plan;if(r.s!==0){r.s=0;r.owner='林澄';r.startDate=dateKey(today);remoteState.set(r.id,0)}r.log.push('加入计划 '+plan.name);chosen.delete(r.id)}el('notice').textContent='已加入 '+plan.name+' · '+pendingItems.map(r=>r.id).join('、')}
+ el('planDialog').close();render()
+};
+// 模拟云效独立保存远端状态；列表只展示最近一次回查结果。
+const remoteState = new Map(records.map(r=>[r.id,r.s]));
+const transitions = [[1],[0,2],[1,3],[1],[0,1],[4]];
+const pause = ms=>new Promise(resolve=>setTimeout(resolve,ms));
+let dialogRecord, busy=false, receipt=2000;
+const sampleSession = {id:'DSH-2084',agent:'DSH 开发 Agent',permission:'修改前确认',flow:'直接执行',notes:'',images:0};
+records[2].session=sampleSession;
+function drafts(r){return ['已处理「'+r.title+'」。\n'+r.desc,'验证步骤：'+r.accept]}
+function field(label,control){return '<label class="field">'+label+control+'</label>'}
+function select(id,options){return '<select id="'+id+'">'+options.map(x=>'<option>'+x+'</option>').join('')+'</select>'}
+function scenario(label){return '<label class="scenario"><input type="checkbox" id="simulate"> '+label+'（模拟）</label>'}
+function note(r,text){r.log.push(text);el('notice').textContent=r.id+' · '+text}
+function show(op,r){
+  mode=op;dialogRecord=r;
+  el('modalTitle').textContent={start:'直接开始',session:'执行会话',write:'回写预览',move:'状态流转'}[op];
+  el('subject').textContent=r.id+' · '+r.title;
+  el('cancel').textContent=op==='session'?'返回议题':'取消';
+  el('confirm').hidden=false;
+  const f=el('fields'), confirm=el('confirm');
+  if(op==='start'){
+    const bug=r.type==='缺陷';
+    f.innerHTML='<section class="summary"><b>议题原文</b><div id="sourceText"><p>'+r.desc+'</p><small>云效项目 · HIS 工作台　 正文图片 · '+(bug?'1 张':'0 张')+'</small></div></section>'
+      +field('目标开发工作区',select('ws',['his-web','his-service']))
+      +'<div class="pair">'+field('Agent',select('agent',['DSH 开发 Agent','DSH 联调 Agent']))+field('权限模式',select('permission',['修改前确认','工作区内允许修改']))+'</div>'
+      +(bug?'<p class="summary">缺陷工作流 · 先复现并取证，再修复验证</p>':field('执行方式',select('flow',['直接执行','先澄清再执行']))+'<div hidden id="questions">'+field('提问方式',select('method',['逐条提问','批量提问','界面提问']))+'</div>')
+      +field('发起人补充（选填）','<textarea id="notes" placeholder="补充复现条件、范围或验收要求"></textarea>')
+      +'<details><summary>模拟异常场景</summary><label class="scenario"><input type="checkbox" id="readFailure"> 原文读取失败</label>'+scenario('材料准备失败')+'</details>';
+    el('readFailure').onchange=()=>{
+      el('sourceText').innerHTML=el('readFailure').checked?'<p role="alert">议题详情读取失败，可填写发起人补充后继续。</p>':'<p>'+escape(r.desc)+'</p><small>云效项目 · HIS 工作台　 正文图片 · '+(bug?'1 张':'0 张')+'</small>';
+      el('notes').required=el('readFailure').checked;
+    };
+    el('ws').value=el('dest').value;
+    if(!bug)el('flow').onchange=()=>el('questions').hidden=el('flow').selectedIndex===0;
+    confirm.textContent='确认开工';
+  }
+  if(op==='session'){
+    const x=r.session;
+    f.innerHTML='<span class="tag">'+r.run+'</span><h3>绑定会话</h3><p class="mono">'+x.id+' · '+r.workspace+'</p><div class="summary">'+[x.agent,x.permission,x.flow].map(escape).join('　·　')+'</div><h3>发起人补充</h3><p>'+escape(x.notes||'无')+'</p>'
+      +(r.run==='等待澄清'?field('补充执行要求','<textarea required id="answer"></textarea>'):'')
+      +'<h3>执行记录</h3><ul class="log">'+r.log.map(t=>'<li>'+escape(t)+'</li>').join('')+'</ul>';
+    const action={'准备失败':'重新准备材料','运行中':'模拟完成执行','等待澄清':'提交答复并继续'};
+    confirm.hidden=!action[r.run];confirm.textContent=action[r.run]||'';
+  }
+  if(op==='write'){
+    r.draft??=drafts(r);r.receipts??=[];
+    f.innerHTML=r.draft.map((text,i)=>{
+      const saved=r.receipts[i];
+      const title=['开发向评论','测试向评论'][i];
+      return field(title+' · '+(saved?'已发布 '+saved:r.failed===i?'发布失败':'待发布'),'<textarea id="comment'+i+'" required '+(saved?'readonly':'')+'>'+escape(text)+'</textarea>');
+    }).join('')+(r.failed===1?'<p role="alert">测试向评论未发布。开发向回执已保留。</p>':'')
+      +(r.receipts.length===0?'<button type="button" id="regen">重新生成草稿</button> '+scenario('测试向评论首次发布失败'):'');
+    if(el('regen'))el('regen').onclick=()=>{r.draft=drafts(r);show('write',r)};
+    confirm.textContent=r.failed===1?'仅重试测试向评论':'确认发布两条评论';
+    confirm.hidden=r.receipts.length===2;
+  }
+  if(op==='move'){
+    if(r.check){
+      f.innerHTML='<p role="status">已请求流转至「'+statuses[r.check.target]+'」。'+(r.check.error?'回查失败，列表保留上次核实的状态。':'正在查询云效实际状态…')+'</p>';
+      confirm.textContent='仅重试回查';
+    }else{
+      const options=transitions[r.s];
+      f.innerHTML='<div class="summary">当前云效状态　'+badge(r)+'</div>'+field('工作流允许的目标状态','<select id="target">'+options.map(i=>'<option value="'+i+'">'+statuses[i]+'</option>').join('')+'</select>')+scenario('首次回查超时');
+      confirm.textContent='确认流转并回查';
+    }
+  }
+  if(!el('modal').open)el('modal').showModal();
+}
+function openAction(op){show(op,active)}
+el('content').onclick=e=>{if(e.target.dataset.check){const id=e.target.dataset.check;e.target.checked?chosen.add(id):chosen.delete(id);render();return}const b=e.target.closest('button');if(!b)return;if(b.dataset.discuss)return openDiscussion([records.find(r=>r.id===b.dataset.discuss)]);if(b.dataset.plan){const r=records.find(x=>x.id===b.dataset.plan);if(!r.check)planDialog([r]);return}if(b.dataset.move){choose(b.dataset.move);return show('move',active)}if(b.dataset.id)return choose(b.dataset.id);const op=b.dataset.op;if(op==='reset'){return resetFilters()}if(op==='back'||op==='forward'){const l=visible();return choose(l[(l.indexOf(active)+(op==='back'?-1:1)+l.length)%l.length].id)}if(op)openAction(op)};
+el('cancel').onclick=()=>el('modal').close();
+el('modal').oncancel=e=>{if(busy)e.preventDefault()};
+function preparing(r,fail){
+  r.run='准备中';note(r,'已绑定 '+r.session.id+'，正在准备正文与图片');
+  setTimeout(()=>{
+    const clarify=r.session.flow.startsWith('先澄清');
+    r.run=fail?'准备失败':clarify?'等待澄清':'运行中';
+    note(r,fail?'材料准备失败，可在原会话重试':clarify?'材料已就绪，等待补充执行要求':'材料已就绪，Agent 开始执行');
+    render();
+    if(el('modal').open&&mode==='session'&&dialogRecord===r)show('session',r);
+  },850);
+}
+el('form').onsubmit=async e=>{
+  e.preventDefault();if(busy)return;
+  const r=dialogRecord;
+  if(mode==='start'){
+    if(r.session)return;
+    r.workspace=el('ws').value;
+    r.session={id:'DSH-'+r.id.split('-')[1],agent:el('agent').value,permission:el('permission').value,notes:el('notes').value,
+      flow:r.type==='缺陷'?'诊断取证':el('flow').selectedIndex?'先澄清 · '+el('method').value:'直接执行'};
+    preparing(r,el('simulate').checked);render();show('session',r);return;
+  }
+  if(mode==='session'){
+    if(r.run==='准备失败')preparing(r,false);
+    else if(r.run==='等待澄清'){const a=el('answer').value.trim();if(!a)return;r.run='运行中';note(r,'已答复：'+a)}
+    else if(r.run==='运行中'){r.run='草稿就绪';r.draft=drafts(r);note(r,'执行完成，discussion.md 草稿就绪')}
+    render();show('session',r);return;
+  }
+  const fault=el('simulate')?.checked;
+  if(mode==='write'){
+    r.draft=r.draft.map((x,i)=>el('comment'+i).value.trim());
+    if(r.draft.some(x=>!x))return;
+  }
+  busy=true;el('confirm').disabled=el('cancel').disabled=true;
+  try{
+    if(mode==='write'){
+      el('confirm').textContent='发布中…';
+      el('fields').querySelectorAll('input,textarea,button').forEach(x=>x.disabled=true);
+      for(let i=0;i<2;i++){
+        if(r.receipts[i])continue;
+        await pause(350);
+        if(i===1&&fault){r.failed=1;note(r,'测试向评论发布失败，等待重试');render();show('write',r);return}
+        const id='C-'+(++receipt);
+        r.receipts[i]=id;r.comments.push([['开发向评论','测试向评论'][i]+' · '+id,r.draft[i]]);
+        note(r,'评论 '+id+' 已发布 · '+new Date().toLocaleTimeString());
+      }
+      r.failed=null;r.run='已回写';
+    }else{
+      if(!r.check){
+        const target=Number(el('target').value);
+        if(!transitions[r.s].includes(target))return;
+        r.check={target};remoteState.set(r.id,target);note(r,'已提交状态变更，等待回查');
+      }
+      show('move',r);el('confirm').textContent='回查中…';await pause(550);
+      if(fault){r.check.error=true;note(r,'云效状态回查超时');render();show('move',r);return}
+      const actual=remoteState.get(r.id);
+      note(r,'回查云效确认：'+statuses[r.s]+' → '+statuses[actual]);r.s=actual;r.check=null;
+    }
+    el('modal').close();render();
+  }finally{busy=false;el('confirm').disabled=el('cancel').disabled=false}
+};
+render()
+</script></html>
