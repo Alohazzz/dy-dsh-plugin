@@ -88,7 +88,17 @@ jobs:
       - name: Generate plugin index
         env:
           VERSION: ${{ needs.release.outputs.version }}
-        run: node scripts/plugin-index.mjs site/index.json "$VERSION"
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            if node scripts/plugin-index.mjs site/index.json "$VERSION"; then
+              exit 0
+            fi
+            if [[ -z "$VERSION" || "$attempt" == 12 ]]; then
+              exit 1
+            fi
+            sleep 25
+          done
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
