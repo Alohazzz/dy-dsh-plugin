@@ -1,7 +1,12 @@
 {
   "name": "dy-dsh-plugin",
-  "version": "0.1.5",
-  "private": true,
+  "version": "0.1.6",
+  "description": "面向 DeepSeek Harness 的云效议题与交付计划插件",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alohazzz/dy-dsh-plugin.git"
+  },
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
   "type": "module",
   "exports": {
     ".": "./dist/host.js",

@@ -4,6 +4,14 @@
 
 [首版 Spec](docs/specs/yunxiao-v1.md) · [Nezha 移植清单](docs/migration-checklist.md)
 
+## 插件索引与发版
+
+在支持自定义插件索引的 DSH 中启用「自定义插件索引」，然后在「插件 → 发现」添加 [云效议题插件索引](https://alohazzz.github.io/dy-dsh-plugin/index.json)。从该索引安装，后续在插件页查看并确认兼容版本的更新。也可以从 [GitHub Releases](https://github.com/Alohazzz/dy-dsh-plugin/releases) 下载预构建安装包。
+
+发版时同步更新 `package.json` 与 `package-lock.json` 的版本，提交后推送对应的 `vX.Y.Z` 标签。GitHub Actions 校验、测试与打包后发布至 npm，创建 GitHub Release，再从 npm 生成 Pages 索引。
+
+npm Trusted Publishing 使用仓库 `Alohazzz/dy-dsh-plugin` 和工作流 `release.yml`，允许 `npm publish`。首次发布需要由 npm 维护者完成账号认证。如果流水线已生成 `npm-package` 产物，首次发布使用其中的原始 tgz。配置 Trusted Publishing 后重跑工作流，流水线会核对 npm 已发布包的完整性，再更新 GitHub Release 与索引。
+
 ## 在 Windows DSH Desktop 安装
 
 使用 Desktop 内置 DSH `0.2.2-rc.3` 或兼容的 `0.2.x` 运行时。先打开一次 DeepSeek Harness Desktop 初始化 profile，从托盘完全退出后，在 PowerShell 运行下面的命令。将包路径替换为实际下载位置。
