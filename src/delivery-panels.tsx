@@ -154,7 +154,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
         <td>{issue.error || issue.title || '—'}</td><td>{issue.owner || '—'}</td><td>{issue.state.name || '—'}</td>
         <td><button type="button" className="dy-delivery-link" aria-label={'移出计划 ' + issue.reference}
           onClick={() => remove(issue)}>移出计划</button></td></tr>)}
-      {!issues.length && <tr><td colSpan={5}>暂无计划议题</td></tr>}
+      {!issues.length && <tr><td colSpan={5} className="dy-delivery-issue-empty">暂无计划议题</td></tr>}
     </Table>
   }
 
@@ -199,29 +199,33 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const [notice, setNotice] = useState('')
     const [removing, setRemoving] = useState<PlanIssue>()
     const detail = result.value
+    const target = detail?.plan.delivery?.target || detail?.plan.targetBranch
     function done(ref?: MrRef) {
       setNotice(ref ? (modal === 'link' ? '已关联 MR !' : '已关联计划与 MR !') + ref.localId : '已保存交付分支')
       setModal(undefined)
       changed()
     }
     const refreshOnClose = () => { setModal(undefined); result.retry() }
-    return <div className="dy-delivery-stack">
-      <header><div><button className="dy-delivery-link" onClick={back}>返回交付计划</button>
-        <h2>{detail?.plan.name || '交付计划详情'}</h2></div>
-        <div className="dy-yx-actions"><button onClick={result.retry}>刷新</button>
-          {detail && <Status label={planStatus(detail.plan, detail.mrStatus)} />}</div>
+    return <div className="dy-delivery-stack dy-plan-detail">
+      <header className="dy-plan-header">
+        <div className="dy-yx-actions dy-plan-toolbar">
+          <button type="button" className="dy-delivery-link" onClick={back}><span aria-hidden="true">← </span>返回交付计划</button>
+          <button type="button" onClick={result.retry}>刷新</button>
+        </div>
+        <div className="dy-plan-title"><h2>{detail?.plan.name || '交付计划详情'}</h2>
+          {detail && <Status label={planStatus(detail.plan, detail.mrStatus)} />}
+        </div>
+        {detail && <dl className="dy-plan-meta">
+          <div><dt>计划完成日</dt><dd>{detail.plan.end}</dd></div>
+          <div><dt>云效项目</dt><dd>{meta?.projects.find(row => row.id === scope.project)?.name || scope.project}</dd></div>
+          <div><dt>目标工作区</dt><dd>{meta?.workspaces.find(row => row.id === scope.workspaceId)?.name || scope.workspaceId}</dd></div>
+        </dl>}
       </header>
       {result.error && <Problem error={result.error} retry={result.retry} />}
       {!detail && !result.error && <p role="status">正在读取交付计划…</p>}
       {notice && <p role="status" className="dy-yx-notice">{notice}</p>}
-      {detail && <><dl className="dy-delivery-facts dy-delivery-card">
-        <div><dt>云效项目</dt><dd>{meta?.projects.find(row => row.id === scope.project)?.name || scope.project}</dd></div>
-        <div><dt>目标工作区</dt><dd>{meta?.workspaces.find(row => row.id === scope.workspaceId)?.name || scope.workspaceId}</dd></div>
-        <div><dt>计划完成日</dt><dd>{detail.plan.end}</dd></div><div><dt>议题数</dt><dd>{detail.plan.members.length} 条</dd></div>
-        {detail.plan.baseBranch && <div><dt>基础分支</dt><dd>{detail.plan.baseBranch}</dd></div>}
-        {detail.plan.kind && <div><dt>代码目录</dt><dd>{detail.plan.worktree || '主工作区'}</dd></div>}
-      </dl><section className="dy-delivery-card" aria-label="交付分支">
-        <div className="dy-delivery-section dy-yx-actions"><h3>交付分支</h3>
+      {detail && <><section className="dy-delivery-card dy-delivery-section dy-plan-delivery" aria-label="交付分支">
+        <div className="dy-yx-actions dy-plan-toolbar"><h3>交付分支</h3>
           <div className="dy-yx-actions">{!detail.plan.delivery?.mr && <button
             className={!detail.plan.delivery ? 'dy-yx-primary' : undefined} onClick={() => setModal('configure')}>配置交付分支</button>}
             {detail.plan.delivery?.mr ? <button className="dy-yx-primary" onClick={() => openMr(detail.plan.delivery!.mr!)}>
@@ -229,12 +233,19 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
             : detail.plan.delivery && !detail.mrError && <button className="dy-yx-primary"
               onClick={() => setModal(detail.candidates.length ? 'link' : 'create')}>
               {detail.candidates.length ? '关联已有 MR' : '发起合并请求'}</button>}</div>
-        </div><dl className="dy-delivery-facts dy-delivery-branch-facts">
+        </div>
+        <dl className="dy-plan-branches">
+          <div><dt>源分支</dt><dd><code>{detail.plan.branch || '—'}</code></dd></div>
+          <div className="dy-plan-target"><dt>目标分支</dt><dd><span aria-hidden="true">→</span>
+            {target ? <code>{target}</code> : <small>待配置</small>}</dd></div>
+        </dl>
+        <dl className="dy-plan-meta">
           <div><dt>仓库</dt><dd>{detail.plan.delivery?.path || (detail.plan.repositoryKey === '.' ? '工作区根仓库' : detail.plan.repositoryKey) || '待配置'}</dd></div>
-          <div><dt>源分支 → 目标分支</dt><dd><Branches source={detail.plan.branch} target={detail.plan.delivery?.target || detail.plan.targetBranch} /></dd></div>
-          <div><dt>关联 MR</dt><dd>{detail.plan.delivery?.mr ? '!' + detail.plan.delivery.mr.localId : '—'}</dd></div>
+          {detail.plan.baseBranch && <div><dt>基础分支</dt><dd>{detail.plan.baseBranch}</dd></div>}
+          {detail.plan.kind && <div><dt>代码目录</dt><dd>{detail.plan.worktree || '主工作区'}</dd></div>}
         </dl>{detail.mrError && <Problem error={detail.mrError} retry={result.retry} />}
-      </section><section className="dy-delivery-card" aria-label="计划议题"><h3 className="dy-delivery-section">计划议题</h3>
+      </section><section className="dy-delivery-card" aria-label="计划议题">
+        <div className="dy-delivery-section dy-plan-title"><h3>计划议题</h3><small>{detail.plan.members.length} 条</small></div>
         <IssueTable issues={detail.issues} remove={setRemoving} /></section>
       {removing && <RemoveIssue scope={scope} issue={removing} close={() => setRemoving(undefined)} removed={() => {
         setNotice('已移出计划 · ' + removing.reference)

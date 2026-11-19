@@ -62,7 +62,6 @@
 .dy-delivery header .dy-delivery-link { margin-bottom: .4rem; }
 .dy-delivery-card { border: 1px solid var(--yx-edge); border-radius: .55rem; min-width: 0; }
 .dy-delivery-section, .dy-delivery-filters, .dy-delivery-count { padding: .65rem .9rem; }
-.dy-delivery-section.dy-yx-actions { justify-content: space-between; }
 .dy-delivery-section h3, h3.dy-delivery-section { margin: 0; }
 .dy-delivery-section h3:not(:first-child) { margin-top: 1rem; }
 .dy-delivery-section > p { margin: .4rem 0; }
@@ -79,13 +78,31 @@
   display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr));
   gap: .65rem 1rem; padding: .65rem .9rem; margin: 0;
 }
-.dy-delivery-branch-facts { border-top: 1px solid var(--yx-edge); }
 .dy-delivery-facts dt { color: var(--yx-muted); font-size: .85em; }
 .dy-delivery-facts dd { margin: .18rem 0 0; overflow-wrap: anywhere; }
 .dy-delivery-branches { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: .35rem; }
 .dy-delivery-branches code {
   padding: .1rem .3rem; border-radius: .25rem; background: var(--yx-selected); overflow-wrap: anywhere;
 }
+.dy-yx .dy-plan-header { display: grid; grid-template-columns: minmax(0, 1fr); gap: .55rem; align-items: start; }
+.dy-plan-header .dy-plan-toolbar .dy-delivery-link { margin: 0; }
+.dy-plan-detail .dy-plan-toolbar { justify-content: space-between; }
+.dy-plan-title { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .7rem; min-width: 0; }
+.dy-plan-title h2 { margin: 0; font-size: 1.45rem; overflow-wrap: anywhere; }
+.dy-plan-meta { display: flex; flex-wrap: wrap; gap: .3rem 1.25rem; margin: 0; font-size: .9em; }
+.dy-plan-meta > div { display: flex; flex-wrap: wrap; gap: 0 .4rem; min-width: 0; }
+.dy-plan-meta dt, .dy-plan-branches dt, .dy-plan-target span { color: var(--yx-muted); }
+.dy-plan-meta dd, .dy-plan-branches dd { margin: 0; overflow-wrap: anywhere; }
+.dy-plan-delivery { display: grid; gap: .75rem; }
+.dy-plan-branches {
+  display: flex; align-items: start; gap: .75rem; margin: 0; padding: .65rem .75rem;
+  border-radius: .4rem; background: var(--yx-raised);
+}
+.dy-plan-branches > div { min-width: 0; }
+.dy-plan-branches dt { margin-bottom: .2rem; font-size: .85em; }
+.dy-plan-target { position: relative; padding-inline-start: 1.35rem; }
+.dy-plan-target span { position: absolute; inset-inline-start: 0; }
+.dy-delivery-table td.dy-delivery-issue-empty { padding-block: 1.6rem; text-align: center; color: var(--yx-muted); }
 .dy-delivery-tabs { padding: .35rem .9rem; border-bottom: 1px solid var(--yx-edge); }
 .dy-delivery-tabs [aria-current] { background: var(--yx-selected); border-color: currentColor; }
 .dy-yx.dy-yx-dialog.dy-delivery-drawer {
