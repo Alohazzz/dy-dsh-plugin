@@ -88,7 +88,7 @@ test('plan association is verified by the host and survives a restart', async t 
   function host() {
     let endpoint
     apply({
-      inject() {}, commands: { register() {} }, credentials: { readRecord: async () => auth },
+      inject() {}, on() {}, commands: { register() {} }, credentials: { readRecord: async () => auth },
       workspaceRegistry: { get: id => id === 'w' ? workspace : undefined, list: () => [workspace] },
       connection: { fetch: { register(route) { if (route.path === '/api/dy-yunxiao') endpoint = route.fetch } } },
     })

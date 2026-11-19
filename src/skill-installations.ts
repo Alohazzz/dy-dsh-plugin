@@ -146,7 +146,7 @@ export function createSkillInstallations(home: string, getAgent: (id: string) =>
     return rows.filter(({ target }) => {
       if (target.kind === 'agent') {
         if (target.id === dshSkillTarget.id) return true
-        // Preserve the scope of installations created with older versions.
+        // Cold catalog requests use a shared preset scope. Only the exact live Agent matches.
         return options.scope !== undefined && options.scope === getAgent(target.id)
       }
       if (!workspace || !target.directory) return false
@@ -189,5 +189,9 @@ export function createSkillInstallations(home: string, getAgent: (id: string) =>
       },
     }
   }
-  return { install, uninstall, list, provider }
+  async function agentStarted(id: string) {
+    if ((await records()).some(row => row.target.kind === 'agent' && row.target.id === id)) catalogChanged()
+  }
+
+  return { install, uninstall, list, provider, agentStarted }
 }

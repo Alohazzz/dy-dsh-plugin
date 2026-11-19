@@ -9,7 +9,7 @@ const time = (value: string) => new Date(value).toLocaleString('zh-CN', { hour12
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error)
 const targetLabel = (target: SkillTarget) => {
   if (target.kind === 'project') return '项目 · ' + target.name
-  return target.id === dshSkillTarget.id ? dshSkillTarget.name : '旧会话 · ' + target.name
+  return target.id === dshSkillTarget.id ? '.dsh Agent（实例共享）' : '会话 Agent · ' + target.name
 }
 const targetKey = (target: SkillTarget) => target.kind + ':' + target.id
 
@@ -106,12 +106,14 @@ export function createSkillPanel(React: typeof ReactType, rpc: Rpc) {
     const title = remove ? '卸载技能' : '安装技能'
     const target = targets?.find(item => targetKey(item) === selection)
     const projects = targets?.filter(item => item.kind === 'project')
+    const agents = targets?.filter(item => item.kind === 'agent' && item.id !== dshSkillTarget.id)
     const dsh = targets?.find(item => item.kind === 'agent' && item.id === dshSkillTarget.id)
     const installed = new Set(rows.filter(row => row.sourceId === skill?.sourceId && row.path === skill?.path).map(row => targetKey(row.target)))
     function targetOption(item: SkillTarget) {
       const key = targetKey(item)
       const alreadyInstalled = installed.has(key)
-      return <option key={key} value={key} disabled={alreadyInstalled}>{item.name}{alreadyInstalled && '（已安装）'}</option>
+      const name = item.kind === 'agent' && item.id === dshSkillTarget.id ? targetLabel(item) : item.name
+      return <option key={key} value={key} disabled={alreadyInstalled}>{name}{alreadyInstalled && '（已安装）'}</option>
     }
     function loadTargets() {
       setError('')
@@ -145,10 +147,13 @@ export function createSkillPanel(React: typeof ReactType, rpc: Rpc) {
         {remove ? <p>从「{targetLabel(remove.target)}」卸载此技能？</p> : <>
           <label>安装目标<select required disabled={!targets?.length || busy} value={selection}
             onChange={event => setSelection(event.target.value)}>
-            <option value="">{targets ? '选择项目或 .dsh Agent' : '正在读取目标…'}</option>
+            <option value="">{targets ? '选择安装目标' : '正在读取目标…'}</option>
             {!!projects?.length && <optgroup label="项目">{projects.map(targetOption)}</optgroup>}
+            {!!agents?.length && <optgroup label="会话 Agent">{agents.map(targetOption)}</optgroup>}
             {dsh && targetOption(dsh)}
           </select></label>
+          {target?.kind === 'agent' && <p>{target.id === dshSkillTarget.id ? '当前 DSH 实例中的 Agent 均可发现此技能。' :
+            '仅所选会话的 Agent 可发现此技能。'}</p>}
         </>}
         {error && <p role="alert" className="dy-yx-error">{error} {skill && !targets &&
           <button type="button" onClick={loadTargets}>重试读取目标</button>}</p>}

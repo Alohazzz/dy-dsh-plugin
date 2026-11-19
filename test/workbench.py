@@ -45,9 +45,9 @@ def check(page):
         expect(search).to_be_visible()
         page.get_by_role("button", name="安装到…").click()
         installation = page.get_by_role("dialog", name="安装技能")
-        expect(installation.get_by_label("安装目标").locator("option")).to_have_text(
-            ["选择项目或 .dsh Agent", ".dsh Agent"]
-        )
+        select = installation.get_by_label("安装目标")
+        expect(select.locator("option[value='agent:.dsh']")).to_have_text(".dsh Agent（实例共享）")
+        expect(select.locator("optgroup[label='项目']")).to_have_count(0)
         installation.get_by_role("button", name="取消").click()
 
         page.set_viewport_size({"width": 1920, "height": 900})

@@ -14,8 +14,15 @@ import { dshSkillTarget, type SkillSourceInput, type SkillTarget } from './skill
 export const name = 'dy-yunxiao'
 export const inject = ['commands', 'connection', 'workspaceRegistry', 'sessionController', 'agentPresets', 'permissionPresets', 'credentials', 'agents']
 type Workspace = { id: string; path: string; title: string }
+type SessionSummary = {
+  sessionId: string
+  origin?: 'subagent'
+  formatStatus?: 'current' | 'migration-required'
+  projections?: { values: { title?: string | null } }
+}
 type Context = {
   emit(event: 'plugin-manager/changed', change: { reason: 'plugin' }): void
+  on(event: 'agent/created', listener: (event: { agent: { id: string } }) => void): void
   inject(names: string[], install: (scope: { skills: {
     register(skill: typeof executionSkill): unknown
     registerProvider(factory: ReturnType<typeof createSkillInstallations>['provider']): unknown
@@ -30,6 +37,7 @@ type Context = {
   }): void } }
   workspaceRegistry: { list(): Workspace[]; get(id: string): Workspace | undefined }
   sessionController: {
+    list(input: Record<string, never>, signal: AbortSignal): Promise<{ items: SessionSummary[] }>
     create(input: { sessionId: string; cwd?: string; workspaceId?: string; agentPreset?: string }): Promise<unknown>
     prompt(input: { sessionId: string; requestId: string; mode: 'queue'; content: { type: 'text'; text: string }[] }, signal: AbortSignal): Promise<unknown>
     resolveAgent(id: string): Promise<{ agent?: { session: unknown } }>
@@ -90,6 +98,7 @@ export function apply(ctx: Context) {
     // DSH 0.2.2's slash menu uses this forwarded event to drop its per-session catalog cache.
     ctx.emit('plugin-manager/changed', { reason: 'plugin' })
   })
+  ctx.on('agent/created', ({ agent }) => { void installations.agentStarted(agent.id).catch(() => {}) })
   ctx.inject(['skills'], scope => {
     scope.skills.register(executionSkill)
     scope.skills.registerProvider(installations.provider)
@@ -135,11 +144,32 @@ export function apply(ctx: Context) {
     return value
   }
 
-  function skillTargets(): SkillTarget[] {
+  async function agentSkillTargets(): Promise<SkillTarget[]> {
+    const { items } = await ctx.sessionController.list({}, AbortSignal.timeout(10_000))
+    return items.filter(item => item.sessionId !== dshSkillTarget.id &&
+      item.origin !== 'subagent' && item.formatStatus !== 'migration-required')
+      .map(({ sessionId, projections }) => ({
+        kind: 'agent', id: sessionId, name: (projections?.values.title?.trim() || '未命名会话') + ' · ' + sessionId.slice(-8),
+      }))
+  }
+
+  function projectSkillTargets(): SkillTarget[] {
+    return ctx.workspaceRegistry.list().map(({ id, title }) => ({ kind: 'project', id, name: title }))
+  }
+
+  async function skillTargets(): Promise<SkillTarget[]> {
     return [
-      ...ctx.workspaceRegistry.list().map(({ id, title }) => ({ kind: 'project' as const, id, name: title })),
+      ...projectSkillTargets(),
+      ...await agentSkillTargets(),
       dshSkillTarget,
     ]
+  }
+
+  async function findSkillTarget(kind: SkillTarget['kind'], id: string) {
+    if (kind === 'project') return projectSkillTargets().find(item => item.id === id)
+    if (kind !== 'agent') return undefined
+    if (id === dshSkillTarget.id) return dshSkillTarget
+    return (await agentSkillTargets()).find(item => item.id === id)
   }
 
   async function meta(): Promise<Meta> {
@@ -354,12 +384,16 @@ export function apply(ctx: Context) {
       const source = skillSources.list().find(item => item.id === input.sourceId)
       const skill = source?.skills.find(item => item.path === input.path)
       if (!source || !skill || skill.readAt !== input.readAt) throw new Error('技能目录已更新，请重新读取后安装')
-      const target = skillTargets().find(item => item.kind === input.targetKind && item.id === input.targetId)
-      if (!target) throw new Error('请选择仍然可用的项目或 .dsh Agent')
+      const target = await findSkillTarget(input.targetKind, input.targetId)
+      if (!target) throw new Error('请选择仍然可用的项目或会话 Agent')
       if (target.kind === 'project') {
         const { root } = await skillProjectRoot(workspace(target.id).path)
         await installations.install(source, skill, { ...target, directory: root })
       } else {
+        if (target.id !== dshSkillTarget.id && !ctx.agents.get(target.id)) {
+          const { agent } = await ctx.sessionController.resolveAgent(target.id)
+          if (!agent) throw new Error('无法启动所选会话的 Agent，请先在 DSH 中打开该会话')
+        }
         await installations.install(source, skill, target)
       }
       return installations.list()

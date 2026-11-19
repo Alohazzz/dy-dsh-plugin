@@ -1,4 +1,4 @@
-"""Verify project and .dsh Agent distribution in an isolated DSH host."""
+"""Verify project, individual Agent and shared distribution in an isolated DSH host."""
 
 from os import environ
 from pathlib import Path
@@ -45,7 +45,7 @@ def check(page):
         skill = next(item for item in bound["skills"] if item["name"] == "fixture-agent-skill")
         rejected = page.request.post("/api/dy-yunxiao", data={"method": "installSkill", "input": {
             "sourceId": bound["id"], "path": skill["path"], "readAt": skill["readAt"],
-            "targetKind": "agent", "targetId": first,
+            "targetKind": "agent", "targetId": "unregistered-agent",
         }})
         assert not rejected.ok
 
@@ -90,10 +90,12 @@ def check(page):
             page.get_by_role("button", name="安装到…").click()
             form = page.get_by_role("dialog", name="安装技能")
             select = form.get_by_label("安装目标")
-            expect(select.locator("option")).to_have_count(4)
-            assert set(select.locator("option").evaluate_all("(options) => options.map(option => option.value)")) == {
+            expect(select.locator("option", has_text="分发验收 Agent 1")).to_have_count(1)
+            choices = set(select.locator("option").evaluate_all("(options) => options.map(option => option.value)"))
+            assert {
                 "", "project:" + workspace["project"], "project:" + workspace["other"], "agent:.dsh",
-            }
+                *("agent:" + session for session in workspace["sessions"]),
+            } <= choices
             select.select_option(value=target)
             form.get_by_role("button", name="确认安装").click()
             expect(form).to_have_count(0)
@@ -110,6 +112,18 @@ def check(page):
         assert_status("fixture-project-skill", "未安装")
         install("fixture-project-skill", "project:" + workspace["project"])
         assert_status("fixture-project-skill", "已安装 · 1")
+        install("fixture-agent-skill", "agent:" + first)
+        assert_status("fixture-agent-skill", "已安装 · 1")
+        for session, cwd, visible in ((first, project, True), (second, project, False), (outside, other, False)):
+            probe("fixture-agent-skill", session, cwd, visible)
+        agent_row = next(row for row in rpc("skillInstallations") if row["target"]["id"] == first)
+        rpc("uninstallSkill", id=agent_row["id"])
+        probe("fixture-agent-skill", first, project, False)
+        page.get_by_role("button", name="已安装", exact=True).click()
+        page.get_by_role("button", name="技能目录", exact=True).click()
+        assert_status("fixture-agent-skill", "未安装")
+        print("PASS | an individual Agent sees and runs the skill; other Agents on the same preset cannot load it")
+
         install("fixture-agent-skill", "agent:.dsh")
         assert_status("fixture-agent-skill", "已安装 · 1")
         for name, expected in (("fixture-project-skill", [True, True, False]), ("fixture-agent-skill", [True, True, True])):
@@ -151,7 +165,7 @@ def check(page):
             company = rpc("bindSkillSource", kind="git", name="公司技能验收", location=remote)["source"]
             for path, kind, target in (
                 ("yunxiao-issue-execution/SKILL.md", "project", workspace["project"]),
-                ("merge-code-review/SKILL.md", "agent", ".dsh"),
+                ("merge-code-review/SKILL.md", "agent", first),
             ):
                 skill = next(item for item in company["skills"] if item["path"] == path)
                 rows = rpc("installSkill", sourceId=company["id"], path=path, readAt=skill["readAt"],
@@ -163,8 +177,8 @@ def check(page):
                 directory = Path(observed["directory"])
                 for file in skill["files"]:
                     assert (directory / file.removeprefix(path.removesuffix("SKILL.md"))).is_file()
-                assert fixture(name=skill["name"], session=outside, cwd=str(other))["catalog"] == (kind == "agent")
-                assert fixture(name=skill["name"], session=second, cwd=str(project))["catalog"]
+                assert not fixture(name=skill["name"], session=outside, cwd=str(other))["catalog"]
+                assert fixture(name=skill["name"], session=second, cwd=str(project))["catalog"] == (kind == "project")
                 rpc("uninstallSkill", id=row["id"])
                 assert not fixture(name=skill["name"], session=first, cwd=str(project))["catalog"]
             print("PASS | company Git skills loaded from pinned commit with companion files and removed")

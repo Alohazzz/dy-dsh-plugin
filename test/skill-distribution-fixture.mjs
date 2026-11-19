@@ -12,8 +12,10 @@ export function apply(ctx) {
           const project = await ctx.workspaceRegistry.create(input.setup.project, '验收项目')
           const other = await ctx.workspaceRegistry.create(input.setup.other, '其他项目')
           const sessions = []
-          for (const workspaceId of [project.id, project.id, other.id]) {
-            sessions.push((await ctx.sessionController.create({ workspaceId, agentPreset: 'standard' })).sessionId)
+          for (const [index, workspaceId] of [project.id, project.id, other.id].entries()) {
+            const { sessionId } = await ctx.sessionController.create({ workspaceId, agentPreset: 'standard' })
+            await ctx.sessionController.rename({ sessionId, title: '分发验收 Agent ' + (index + 1) })
+            sessions.push(sessionId)
           }
           return Response.json({ project: project.id, other: other.id, sessions })
         }

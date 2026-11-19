@@ -31,7 +31,7 @@ $runner = Join-Path $env:USERPROFILE '.codex/skills/dsh-plugin-test/scripts/run.
 python -X utf8 $runner --project . --scenario test/workbench.py
 ```
 
-项目与 .dsh Agent 的分发验收在隔离实例中创建两个项目和三个会话，验证项目范围、跨项目发现、读取说明、执行示例脚本及卸载。追加测试宿主时，将夹具复制到临时目录，使它与工作台分别作为宿主插件解析。
+技能分发验收在隔离实例中创建两个项目和三个使用相同预设的会话。测试覆盖项目范围、指定会话 Agent 隔离、实例共享、读取说明、执行示例脚本及卸载。可通过 `DY_SKILL_ACCEPTANCE_REMOTE` 额外验证公司 Git 技能的分发。追加测试宿主时，将夹具复制到临时目录，使它与工作台分别作为宿主插件解析。
 
 ```powershell
 $runner = Join-Path $env:USERPROFILE '.codex/skills/dsh-plugin-test/scripts/run.py'
