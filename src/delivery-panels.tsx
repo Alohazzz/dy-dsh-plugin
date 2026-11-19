@@ -77,7 +77,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const [choice, setChoice] = useState(plan.delivery?.key ?? plan.repositoryKey)
     const key = choice ?? rows.value?.find(row => row.branch === plan.branch)?.key ?? rows.value?.[0]?.key ?? ''
     const options = useRead<BranchOptions>('planDeliveryOptions', key ? { ...scope, key } : undefined)
-    const [target, setTarget] = useState(plan.delivery?.target ?? '')
+    const [target, setTarget] = useState(plan.delivery?.target ?? plan.targetBranch ?? '')
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState('')
     const selected = options.value?.targets.includes(target) ? target : ''
@@ -94,7 +94,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     return <Modal label="配置交付分支" drawer busy={busy} close={close}>
       <h2>配置交付分支</h2><p>{plan.name} · <code>{plan.branch}</code></p>
       <form onSubmit={submit}><fieldset disabled={busy}>
-        <label>仓库<select value={key} onChange={event => { setChoice(event.target.value); setTarget(''); setError('') }}>
+        <label>仓库<select value={key} disabled={Boolean(plan.kind)} onChange={event => { setChoice(event.target.value); setTarget(''); setError('') }}>
           <option value="">请选择</option>
           {rows.value?.map(row => <option key={row.key} value={row.key}>{row.name} · {row.key}</option>)}
         </select></label>
@@ -180,6 +180,8 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
         <div><dt>云效项目</dt><dd>{meta?.projects.find(row => row.id === scope.project)?.name || scope.project}</dd></div>
         <div><dt>目标工作区</dt><dd>{meta?.workspaces.find(row => row.id === scope.workspaceId)?.name || scope.workspaceId}</dd></div>
         <div><dt>计划完成日</dt><dd>{detail.plan.end}</dd></div><div><dt>议题数</dt><dd>{detail.plan.members.length} 条</dd></div>
+        {detail.plan.baseBranch && <div><dt>基础分支</dt><dd>{detail.plan.baseBranch}</dd></div>}
+        {detail.plan.kind && <div><dt>代码目录</dt><dd>{detail.plan.worktree || '主工作区'}</dd></div>}
       </dl><section className="dy-delivery-card" aria-label="交付分支">
         <div className="dy-delivery-section dy-yx-actions"><h3>交付分支</h3>
           <div className="dy-yx-actions">{!detail.plan.delivery?.mr && <button
@@ -190,8 +192,8 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
               onClick={() => setModal(detail.candidates.length ? 'link' : 'create')}>
               {detail.candidates.length ? '关联已有 MR' : '发起合并请求'}</button>}</div>
         </div><dl className="dy-delivery-facts dy-delivery-branch-facts">
-          <div><dt>仓库</dt><dd>{detail.plan.delivery?.path || '待配置'}</dd></div>
-          <div><dt>源分支 → 目标分支</dt><dd><Branches source={detail.plan.branch} target={detail.plan.delivery?.target} /></dd></div>
+          <div><dt>仓库</dt><dd>{detail.plan.delivery?.path || (detail.plan.repositoryKey === '.' ? '工作区根仓库' : detail.plan.repositoryKey) || '待配置'}</dd></div>
+          <div><dt>源分支 → 目标分支</dt><dd><Branches source={detail.plan.branch} target={detail.plan.delivery?.target || detail.plan.targetBranch} /></dd></div>
           <div><dt>关联 MR</dt><dd>{detail.plan.delivery?.mr ? '!' + detail.plan.delivery.mr.localId : '—'}</dd></div>
         </dl>{detail.mrError && <Problem error={detail.mrError} retry={result.retry} />}
       </section><section className="dy-delivery-card" aria-label="计划议题"><h3 className="dy-delivery-section">计划议题</h3>
@@ -218,7 +220,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const phases = ['分支待配置', '未提 MR', ...Object.values(states).map(value => value === '已合并' ? '代码已合并' : value)]
     const term = query.trim().toLowerCase()
     const rows = (result.value || []).filter(row => (!phase || planStatus(row.plan, row.mrStatus) === phase) && [
-      row.plan.name, row.plan.branch, row.plan.delivery?.path, row.plan.delivery?.target,
+      row.plan.name, row.plan.branch, row.plan.delivery?.path, row.plan.delivery?.target || row.plan.targetBranch,
     ].some(value => value?.toLowerCase().includes(term)))
     return <main className="dy-yx dy-delivery">
       {selected ? <PlanDetail key={JSON.stringify(selected)} scope={selected} meta={meta.value} revision={revision}
@@ -247,7 +249,8 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
             {rows.map(row => <tr key={JSON.stringify(planKey(row))}>
               <td><button className="dy-delivery-link" onClick={() => openPlan(planKey(row))}>{row.plan.name}</button>
                 <small>{row.projectName} · {row.workspaceName}</small></td>
-              <td><small>{row.plan.delivery?.path}</small><Branches source={row.plan.branch} target={row.plan.delivery?.target} /></td>
+              <td><small>{row.plan.delivery?.path || (row.plan.repositoryKey === '.' ? '工作区根仓库' : row.plan.repositoryKey)}</small>
+                <Branches source={row.plan.branch} target={row.plan.delivery?.target || row.plan.targetBranch} /></td>
               <td>{row.plan.end}</td><td className="dy-delivery-number">{row.plan.members.length}</td>
               <td><Status label={planStatus(row.plan, row.mrStatus)} /></td></tr>)}
             {!rows.length && <tr><td colSpan={5} role="status">{result.value ? '没有符合条件的交付计划' :

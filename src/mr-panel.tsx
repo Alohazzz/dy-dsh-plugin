@@ -45,7 +45,9 @@ export function createMrPanel(React: typeof ReactType, rpc: Rpc) {
     useEffect(() => {
       if (!key) return
       const abort = new AbortController()
-      rpc<Preview>('mrPreview', { workspaceId, key }, abort.signal).then(value => {
+      const method = plan ? 'planMrPreview' : 'mrPreview'
+      const input = plan ? { project: plan.project, workspaceId, planId: plan.planId } : { workspaceId, key }
+      rpc<Preview>(method, input, abort.signal).then(value => {
         if (abort.signal.aborted) return
         setPreview(value)
         setDrafts(old => {

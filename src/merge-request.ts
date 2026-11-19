@@ -6,7 +6,7 @@ import type { createClient } from './yunxiao-client.mjs'
 
 type Api = ReturnType<typeof createClient>['codeup']
 const exec = promisify(execFile)
-async function git(cwd: string, args: string[], optional = false) {
+export async function git(cwd: string, args: string[], optional = false) {
   try {
     return (await exec('git', args, { cwd, windowsHide: true, timeout: 90_000, maxBuffer: 16 << 20,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' } })).stdout.trimEnd()
@@ -116,16 +116,16 @@ async function inspect(dir: string, api: Api) {
   const preview = { ...local, repository, remoteSha, ahead, behind, blocked, targets, needPush, commits }
   return { preview, refs, readUrl, pushUrl }
 }
-export async function mrPreview(root: string, key: string, api: Api) {
-  const { preview } = await inspect(await workspaceRepository(root, key), api)
+export async function mrPreview(root: string, key: string, api: Api, worktree?: string) {
+  const { preview } = await inspect(worktree ?? await workspaceRepository(root, key), api)
   return { ...preview, openMrs: await api.openForSource(preview.repository.id, preview.branch) }
 }
 
 export type MrInput = { workspaceId: string; key: string; repositoryId: number; branch: string; sha: string; remoteSha: string;
   target: string; title: string; description: string; needPush: boolean }
 const pending = new Set<string>()
-export async function submitMr(root: string, input: MrInput, api: Api) {
-  const dir = await workspaceRepository(root, input.key)
+export async function submitMr(root: string, input: MrInput, api: Api, worktree?: string) {
+  const dir = worktree ?? await workspaceRepository(root, input.key)
   const lock = JSON.stringify([input.repositoryId, input.branch, input.target])
   if (pending.has(lock)) throw new Error('该合并请求正在提交')
   pending.add(lock)

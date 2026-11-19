@@ -239,6 +239,21 @@
 .dy-yx-dialog textarea { min-height: 5.5rem; resize: vertical; }
 .dy-yx-dialog .dy-yx-actions { justify-content: flex-end; margin-top: .75rem; }
 .dy-yx-dialog .dy-yx-discovery { justify-content: flex-start; }
+.dy-yx-plan-create .dy-yx-plan-kinds > div,
+.dy-yx-plan-create .dy-yx-plan-field,
+.dy-yx-plan-create .dy-yx-plan-conflict { display: flex; align-items: center; gap: .4rem; }
+.dy-yx-plan-create :is(.dy-yx-plan-kinds > div, .dy-yx-plan-conflict) { flex-wrap: wrap; }
+.dy-yx-plan-create .dy-yx-plan-kinds legend { margin-bottom: .3rem; }
+.dy-yx-plan-create .dy-yx-plan-kinds [aria-pressed=true] {
+  color: var(--dsw-alias-link, LinkText);
+  border-color: currentColor;
+  background: var(--yx-selected);
+}
+.dy-yx-plan-create .dy-yx-plan-field input { flex: 1; min-width: 0; }
+.dy-yx-plan-create .dy-yx-plan-field :is(select, button) { max-width: 44%; }
+.dy-yx-plan-create .dy-yx-plan-worktree { display: flex; align-items: center; gap: .45rem; }
+.dy-yx-plan-create .dy-yx-plan-conflict > p { flex-basis: 100%; margin-bottom: 0; }
+.dy-yx-plan-create .dy-yx-actions { flex-wrap: wrap; }
 main.dy-yx { display: flex; flex-direction: column; gap: .75rem; }
 main.dy-yx > * { flex-shrink: 0; }
 .dy-yx header { align-items: center; margin: 0; padding-bottom: .75rem; border-bottom: 1px solid var(--yx-edge); }

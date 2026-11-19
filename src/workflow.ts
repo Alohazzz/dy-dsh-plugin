@@ -5,7 +5,9 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { atomicJson, descriptionOf, digest, discussionSections, publishComment, readIssue, readJson, sessionPaths } from './yunxiao.mjs'
 import { createClient, YunxiaoHttpError } from './yunxiao-client.mjs'
-import type { Plan, PlanDelivery } from './contracts.ts'
+import type { Plan, PlanCreate, PlanDelivery } from './contracts.ts'
+import { commonGitDirectory, createPlanCheckout } from './plan-git.ts'
+import { planBranchName, planKinds } from './plan-branch-name.ts'
 
 type Client = ReturnType<typeof createClient>
 type IssueKey = { project: string; id: string }
@@ -324,26 +326,55 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     })
   }
 
-  async function createPlan(cwd: string, project: string, input: Pick<Plan, 'name' | 'branch' | 'end'>,
+  async function createPlan(cwd: string, project: string, input: PlanCreate | Pick<Plan, 'name' | 'branch' | 'end'>,
     repository?: { key: string; directory: string }) {
-    if (!input.name?.trim() || input.name.length > 100 || !input.branch?.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(input.end)) {
-      throw new Error('请填写计划名称、已有分支和完成日期')
+    const date = new Date(input.end + 'T00:00:00Z')
+    if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100 ||
+        typeof input.branch !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(input.end) ||
+        !Number.isFinite(+date) || date.toISOString().slice(0, 10) !== input.end) {
+      throw new Error('请填写计划名称和有效的完成日期')
     }
-    const branch = input.branch.trim()
-    try {
-      await branchExists(repository?.directory ?? cwd, branch)
-    } catch {
-      throw new Error('目标工作区找不到该本地分支')
+    const directory = repository?.directory ?? cwd
+    const name = input.name.trim()
+    let branch = input.branch.trim()
+    let creation: PlanCreate | undefined
+    if ('kind' in input) {
+      if (!Object.hasOwn(planKinds, input.kind) || typeof input.version !== 'string' ||
+          typeof input.targetBranch !== 'string' || typeof input.baseBranch !== 'string' || !input.baseBranch.trim() ||
+          (input.worktreeDir !== undefined && (typeof input.worktreeDir !== 'string' || !input.worktreeDir.trim()))) {
+        throw new Error('请填写有效的计划类型、基础分支和代码目录')
+      }
+      const version = input.version.trim(), targetBranch = input.targetBranch.trim()
+      branch ||= planBranchName(input.kind, version, targetBranch, name)
+      creation = { ...input, branch, baseBranch: input.baseBranch.trim(), targetBranch, version,
+        useExistingRemote: input.useExistingRemote === true, worktreeDir: input.worktreeDir?.trim() }
+    } else {
+      try { await branchExists(directory, branch) }
+      catch { throw new Error('目标工作区找不到该本地分支') }
     }
     const path = await planPath(cwd, project)
     return serial(path, async () => {
       await folder()
       const all: Plan[] = await readJson(path) ?? []
-      const name = input.name.trim()
       if (all.some(plan => plan.name === name)) throw new Error('计划名称已存在')
       const plan: Plan = { name, branch, end: input.end, id: randomUUID(), members: [],
         ...(repository ? { repositoryKey: repository.key } : {}) }
-      await atomicJson(path, [...all, plan])
+      if (!creation) {
+        await atomicJson(path, [...all, plan])
+        return plan
+      }
+      const { kind, version, baseBranch, targetBranch } = creation
+      Object.assign(plan, { kind, version, baseBranch, targetBranch })
+      const gitInput = creation
+      await serial(await commonGitDirectory(directory), async () => {
+        const checkout = await createPlanCheckout(directory, gitInput, plan.id)
+        plan.worktree = checkout.worktree
+        try { await atomicJson(path, [...all, plan]) }
+        catch (failure) {
+          await checkout.rollback().catch(() => { throw new Error('保存计划失败，且自动清理未完成，请检查分支「' + branch + '」') })
+          throw failure
+        }
+      })
       return plan
     })
   }

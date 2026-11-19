@@ -19,7 +19,15 @@ export type Meta = {
 }
 export type MrRef = { repositoryId: number; localId: number }
 export type PlanDelivery = { key: string; repositoryId: number; path: string; target: string; mr?: MrRef }
-export type Plan = { id: string; name: string; branch: string; end: string; members: string[]; repositoryKey?: string; delivery?: PlanDelivery }
+export type PlanKind = 'feature' | 'fix' | 'patch' | 'project' | 'hotfix'
+export type Plan = {
+  id: string; name: string; branch: string; end: string; members: string[]; repositoryKey?: string; delivery?: PlanDelivery
+  kind?: PlanKind; version?: string; baseBranch?: string; targetBranch?: string; worktree?: string
+}
+export type PlanCreate = Pick<Plan, 'name' | 'branch' | 'end'> & {
+  kind: PlanKind; version: string; baseBranch: string; targetBranch: string; useExistingRemote: boolean; worktreeDir?: string
+}
+export type PlanBranchCheck = { localExists: boolean; remoteExists: boolean }
 export type PlanKey = { project: string; workspaceId: string; planId: string }
 export type PlanRow = PlanKey & { plan: Plan; projectName: string; workspaceName: string; mrStatus?: string }
 export type PlanIssue = Pick<Issue, 'id' | 'reference' | 'title' | 'owner' | 'state' | 'url'> & { error?: string }

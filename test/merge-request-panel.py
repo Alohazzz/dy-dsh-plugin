@@ -6,6 +6,7 @@ def check(page):
     rows = [dict(key=key, name=name, branch=branch, sha='a'*40, upstream='', ahead=0, behind=0, dirty=0, error='')
             for key, name, branch in [('.', 'HIS', 'root-fix'), ('Nto.His/Term', 'Term', 'term-fix')]]
     submissions = []
+    creations = []
     detail_reads = []
     binding = dict(key='Nto.His/Term', repositoryId=2, path='org/Term', target='release')
     plans = {
@@ -32,8 +33,27 @@ def check(page):
                          organization='org', user='苏一', presets=[], permissions=[])
         elif method == 'mrRepos':
             value = rows
-        elif method == 'mrPreview':
-            sub = args['key'] != '.'
+        elif method == 'planRepositories':
+            value = dict(repositories=rows, worktreeDir=r'H:\Project\HIS-worktrees')
+        elif method == 'planVersions':
+            value = [dict(id='v1', name='v2.20260901.0')]
+        elif method == 'filters':
+            value = dict(statuses=[], versions=[], products=[])
+        elif method == 'search':
+            value = dict(rows=[], more=False)
+        elif method == 'checkPlanBranch':
+            assert args['repositoryKey'] == 'Nto.His/Term'
+            assert args['branch'] == 'fix/v2.20260901/release/术语复核'
+            value = dict(localExists=False, remoteExists=True)
+        elif method == 'createPlan':
+            creations.append(args)
+            plan = dict(id='created', members=[], repositoryKey=args['repositoryKey'],
+                        worktree=args['worktreeDir'] + r'\created',
+                        **{key: args[key] for key in ('name', 'kind', 'branch', 'end', 'baseBranch', 'targetBranch')})
+            plans['created'] = value = plan
+        elif method in ('mrPreview', 'planMrPreview'):
+            key = args['key'] if method == 'mrPreview' else plans[args['planId']]['delivery']['key']
+            sub = key != '.'
             value = dict(**rows[int(sub)], repository=dict(path='org/' + rows[int(sub)]['name'], id=1+int(sub), defaultBranch='main'),
                          remoteSha='' if sub else 'a'*40, targets=['main','release'], blocked='', needPush=sub, commits=[], openMrs=[])
         elif method == 'submitMr':
@@ -48,7 +68,9 @@ def check(page):
                            owner='苏一', state=dict(id='doing', name='开发中'), url='')] if plan['members'] else []
             value = dict(plan=plan, candidates=candidates, issues=issues, mrStatus=plan_row(plan)['mrStatus'])
         elif method == 'planDeliveryOptions':
-            value = dict(repository=dict(path='org/HIS', id=1, defaultBranch='main'), targets=['main'])
+            value = (dict(repository=dict(path='org/Term', id=2, defaultBranch='release'), targets=['release'])
+                     if args['planId'] == 'created' else
+                     dict(repository=dict(path='org/HIS', id=1, defaultBranch='main'), targets=['main']))
         elif method == 'bindPlanDelivery':
             value = dict(key=args['key'], repositoryId=args['repositoryId'], path='org/HIS', target=args['target'])
             plans[args['planId']]['delivery'] = value
@@ -133,4 +155,41 @@ def check(page):
     expect(main.get_by_role('link', name='查看 MR !5')).to_be_visible()
     assert len(submissions) == 2
     assert (submissions[-1]['key'], submissions[-1]['title'], submissions[-1]['target']) == ('Nto.His/Term','子仓草稿','release')
-    print('PASS | plan list, legacy binding, scoped MR creation, existing MR association, shared detail and standalone MR')
+    page.get_by_role('button', name='交付计划', exact=True).click()
+    if page.get_by_role('button', name='返回交付计划', exact=True).is_visible():
+        page.get_by_role('button', name='返回交付计划', exact=True).click()
+    page.set_viewport_size(dict(width=420, height=680))
+    page.get_by_role('button', name='创建计划', exact=True).click()
+    plan_dialog = page.get_by_role('dialog', name='创建计划')
+    plan_dialog.get_by_label('目标仓库').select_option('Nto.His/Term')
+    expect(plan_dialog.get_by_label('基础分支')).to_have_value('term-fix')
+    plan_dialog.get_by_label('计划名称').fill('术语复核')
+    plan_dialog.get_by_role('button', name='fix · 缺陷修复', exact=True).click()
+    plan_dialog.get_by_label('选择云效版本').select_option('v2.20260901')
+    plan_dialog.get_by_label('合并回目标分支').fill('release')
+    source = plan_dialog.get_by_label('源分支')
+    expect(source).to_have_value('fix/v2.20260901/release/术语复核')
+    source.fill('fix/manual')
+    expect(source).to_have_value('fix/manual')
+    plan_dialog.get_by_label('计划名称').fill('术语复核改')
+    plan_dialog.get_by_label('计划名称').fill('术语复核')
+    plan_dialog.get_by_role('button', name='检测', exact=True).click()
+    expect(plan_dialog.get_by_role('button', name='创建计划 + 分支', exact=True)).to_be_disabled()
+    plan_dialog.get_by_role('button', name='继续使用远端分支').click()
+    plan_dialog.get_by_label('另建 worktree').check()
+    expect(plan_dialog.get_by_label('代码目录')).to_have_value(r'H:\Project\HIS-worktrees')
+    plan_dialog.get_by_label('计划完成时间').fill('2026-11-24')
+    plan_dialog.get_by_role('button', name='创建计划 + 分支 + worktree', exact=True).click()
+    expect(page.get_by_role('heading', name='术语复核', exact=True)).to_be_visible()
+    assert len(creations) == 1 and creations[0]['useExistingRemote']
+    assert (creations[0]['baseBranch'], creations[0]['targetBranch'], creations[0]['end']) == ('term-fix', 'release', '2026-11-24')
+    page.get_by_role('button', name='配置交付分支').click()
+    delivery_dialog = page.get_by_role('dialog', name='配置交付分支')
+    expect(delivery_dialog.get_by_label('目标分支')).to_have_value('release')
+    delivery_dialog.get_by_role('button', name='取消').click()
+    page.get_by_role('button', name='云效议题', exact=True).click()
+    page.get_by_role('button', name='创建计划', exact=True).click()
+    expect(plan_dialog.get_by_label('目标仓库')).to_have_value('.')
+    expect(plan_dialog.get_by_label('基础分支')).to_have_value('root-fix')
+    plan_dialog.get_by_role('button', name='取消').click()
+    print('PASS | plan creation, legacy binding, scoped MR creation, existing MR association, shared detail and standalone MR')

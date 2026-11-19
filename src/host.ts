@@ -2,11 +2,12 @@ import { deliveryOptions, mrPreview, mrRepos, submitMr, workspaceRepository, typ
 import { issueMaterials } from './issue-materials.ts'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import { checkPlanBranch, planWorktree } from './plan-git.ts'
 import { createConnectionSettings, type CredentialStore } from './connection-settings.ts'
 import { createHandler, descriptionOf } from './yunxiao.mjs'
 import { createWorkflow, executionSkill, label, projectOf } from './workflow.ts'
-import type { Details, Issue, IssueKey, Meta, MrRef, Option, Plan, PlanDetails, PlanKey, PlanRow, Search } from './contracts.ts'
+import type { Details, Issue, IssueKey, Meta, MrRef, Option, Plan, PlanCreate, PlanDetails, PlanKey, PlanRow, Search } from './contracts.ts'
 import { createSkillSources } from './skill-sources.ts'
 import { createSkillInstallations, skillProjectRoot } from './skill-installations.ts'
 import { dshSkillTarget, type SkillSourceInput, type SkillTarget } from './skill-catalog.ts'
@@ -268,6 +269,11 @@ export function apply(ctx: Context) {
     if (!plan.delivery) throw new Error('请先配置计划仓库和目标分支')
     return plan.delivery
   }
+  async function deliveryWorktree(input: PlanKey, plan: Plan, key: string) {
+    if (!plan.worktree) return
+    const repository = await workspaceRepository(planDirectory(input), key)
+    return planWorktree(repository, plan.worktree)
+  }
   async function planDetails(api: Client, input: PlanKey): Promise<PlanDetails> {
     const plan = await readPlan(api, input)
     const delivery = plan.delivery
@@ -298,6 +304,12 @@ export function apply(ctx: Context) {
     async mrPreview({ workspaceId, key }: { workspaceId: string; key: string }) {
       return mrPreview(workspace(workspaceId).path, key, (await settings.client()).codeup)
     },
+    async planMrPreview(input: PlanKey) {
+      const api = await settings.client()
+      const plan = await readPlan(api, input)
+      const { key } = requireDelivery(plan)
+      return mrPreview(planDirectory(input), key, api.codeup, await deliveryWorktree(input, plan, key))
+    },
     async submitMr(input: MrInput) {
       return submitMr(workspace(input.workspaceId).path, input, (await settings.client()).codeup)
     },
@@ -322,6 +334,7 @@ export function apply(ctx: Context) {
       const api = await settings.client()
       return updateDelivery(api, input, async plan => {
         if (plan.delivery?.mr) throw new Error('交付分支已有合并请求，无法修改绑定')
+        if (plan.kind && plan.repositoryKey !== input.key) throw new Error('请选择计划创建时的仓库')
         const { repository, targets } = await deliveryOptions(planDirectory(input), input.key, plan.branch, api.codeup)
         if (repository.id !== input.repositoryId || !targets.includes(input.target)) throw new Error('仓库或目标分支已变化，请重新选择')
         return { key: input.key, repositoryId: repository.id, path: repository.path, target: input.target }
@@ -348,7 +361,8 @@ export function apply(ctx: Context) {
         if (input.repositoryId !== binding.repositoryId || input.key !== binding.key ||
           input.branch !== plan.branch || input.target !== binding.target) throw new Error('计划分支已变化，请刷新后重试')
         if (binding.mr) return binding
-        const result = await submitMr(planDirectory(input), input, api.codeup)
+        const directory = await deliveryWorktree(input, plan, binding.key)
+        const result = await submitMr(planDirectory(input), input, api.codeup, directory)
         return { ...binding, mr: { repositoryId: binding.repositoryId, localId: result.localId } }
       })
       return delivery.mr!
@@ -457,10 +471,23 @@ export function apply(ctx: Context) {
     plans(input: { project: string; workspaceId: string }) {
       return workflow.plans(workspace(input.workspaceId).path, input.project)
     },
-    async createPlan(input: { project: string; workspaceId: string; name: string; branch: string; end: string; repositoryKey?: string }) {
+    async planRepositories({ workspaceId }: { workspaceId: string }) {
+      const cwd = workspace(workspaceId).path
+      return { repositories: await mrRepos(cwd), worktreeDir: join(dirname(cwd), basename(cwd) + '-worktrees') }
+    },
+    async planVersions({ project }: { project: string }) {
+      return options(await (await settings.client()).versions(project))
+    },
+    async checkPlanBranch(input: { workspaceId: string; repositoryKey: string; branch: string }) {
+      if (typeof input.branch !== 'string') throw new Error('请输入源分支')
+      const directory = await workspaceRepository(workspace(input.workspaceId).path, input.repositoryKey)
+      return checkPlanBranch(directory, input.branch.trim())
+    },
+    async createPlan(input: { project: string; workspaceId: string; repositoryKey?: string } &
+      (PlanCreate | Pick<Plan, 'name' | 'branch' | 'end'>)) {
       const cwd = workspace(input.workspaceId).path
-      const repository = input.repositoryKey
-        ? { key: input.repositoryKey, directory: await workspaceRepository(cwd, input.repositoryKey) } : undefined
+      const key = input.repositoryKey || ('kind' in input ? '.' : '')
+      const repository = key ? { key, directory: await workspaceRepository(cwd, key) } : undefined
       return workflow.createPlan(cwd, input.project, input, repository)
     },
     addToPlan(input: { project: string; workspaceId: string; planId: string; ids: string[] }) {

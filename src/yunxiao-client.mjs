@@ -74,11 +74,15 @@ export function createClient({
     if (!id) throw new Error('云效未返回当前用户')
     return { id, name: user.name || user.userName || id }
   }
+  async function versions(space) {
+    return list(await call(projectPath(space) + '/versions'), 'versions')
+  }
 
   return {
     organization,
     project,
     currentUser,
+    versions,
     codeup: codeupApi(call, organization),
     async projects() {
       const projects = []
@@ -107,7 +111,7 @@ export function createClient({
       return {
         statuses: [...new Map(items.flatMap(item => item.statuses).map(value => [value.id,value])).values()],
         fields: items.flatMap(item => item.fields),
-        versions: list(await call(projectPath(space) + '/versions'), 'versions'),
+        versions: await versions(space),
       }
     },
     async schedule(issue, space) {

@@ -1,8 +1,8 @@
 import { createDeliveryPanels } from './delivery-panels.tsx'
+import { createPlanDialog } from './create-plan-dialog.tsx'
 import type * as ReactType from 'react'
 import { createSkillPanel } from './skill-panel.tsx'
 import type { ConnectionSettings, Details, Issue, Meta, MrRef, Option, Plan, PlanKey, PlanResult, Preview } from './contracts.ts'
-import type { mrRepos } from './merge-request.ts'
 
 type Navigation = { openSession(id: string): void }
 type Slots = {
@@ -79,7 +79,8 @@ function restoreSelection(meta: Meta, preferDefault: boolean): Selection {
 }
 
 type Modal =
-  | { kind: 'discuss' | 'add' | 'create'; issues: Issue[] }
+  | { kind: 'discuss' | 'add'; issues: Issue[] }
+  | { kind: 'create'; issues: [] }
   | { kind: 'start' | 'publish' | 'move'; issue: Issue }
 
 window.__ModuleLoader__.load({
@@ -87,6 +88,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const { Plans, Requests, RequestDetail } = createDeliveryPanels(React, rpc)
+    const CreatePlanDialog = createPlanDialog(React, rpc)
     const { useEffect, useRef, useState } = React
 
     function Multi({ title, options, values, change }: {
@@ -334,6 +336,8 @@ window.__ModuleLoader__.load({
           <label>目标工作区 <select value={workspaceId} onChange={event => { clearContext(); updateSelection({ workspaceId: event.target.value }) }}>
             <option value="">请选择</option>{meta?.workspaces.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select></label>
+          <button className="dy-yx-primary" disabled={!project || !workspaceId}
+            onClick={() => setModal({ kind: 'create', issues: [] })}>创建计划</button>
         </div>
         {project && <>
           <div className="dy-yx-bar dy-yx-filters" aria-label="筛选议题">
@@ -431,11 +435,13 @@ window.__ModuleLoader__.load({
           await connect(true)
           plansChanged()
         }} />}
-        {modal && <Dialog key={modal.kind} modal={modal} detail={'issue' in modal && detail?.id === modal.issue.id ? detail : undefined} detailError={detailError} meta={meta}
-          workspaceId={workspaceId} project={project} close={() => {
-            setModal(modal.kind === 'create' && addAfterCreate ? { kind: 'add', issues: addAfterCreate } : undefined)
+        {modal?.kind === 'create' && <CreatePlanDialog meta={meta} scope={{ project, workspaceId }} close={() => {
+            setModal(addAfterCreate ? { kind: 'add', issues: addAfterCreate } : undefined)
             setAddAfterCreate(undefined)
-          }} pending={pending}
+          }} saved={() => { setMarked([]); refresh(value => value + 1); plansChanged() }} />}
+        {modal && modal.kind !== 'create' && <Dialog key={modal.kind} modal={modal}
+          detail={'issue' in modal && detail?.id === modal.issue.id ? detail : undefined} detailError={detailError} meta={meta}
+          workspaceId={workspaceId} project={project} close={() => setModal(undefined)} pending={pending}
           setPending={(id, target) => setPending(previous => ({ ...previous, [id]: target }))}
           refresh={() => refresh(value => value + 1)} onSuccess={passed}
           onPlan={() => { setMarked([]); refresh(value => value + 1); plansChanged() }}
@@ -606,17 +612,13 @@ window.__ModuleLoader__.load({
     }
 
     function Dialog(props: {
-      modal: Modal; detail?: Details; detailError: string; meta?: Meta; workspaceId: string; project: string
+      modal: Exclude<Modal, { kind: 'create' }>; detail?: Details; detailError: string; meta?: Meta; workspaceId: string; project: string
       close(): void; refresh(): void; pending: Record<string, string>; setPending(id: string, target: string): void
       onSuccess(issue: Issue, result: string): void
-      onPlan(plan?: Plan, scope?: Omit<PlanKey, 'planId'>): void
-      onOpenSession(id: string): void; onCreate?(): void; selectPlanScope?: boolean
+      onPlan(): void
+      onOpenSession(id: string): void; onCreate?(): void
     }) {
-      const { modal, close, detail, meta, pending, setPending, selectPlanScope } = props
-      const [planProject, setPlanProject] = useState(props.project || meta?.defaultProject || meta?.projects[0]?.id || '')
-      const [planWorkspace, setPlanWorkspace] = useState(props.workspaceId || meta?.workspaces[0]?.id || '')
-      const project = selectPlanScope ? planProject : props.project
-      const workspaceId = selectPlanScope ? planWorkspace : props.workspaceId
+      const { modal, close, detail, meta, pending, setPending, project, workspaceId } = props
       const { kind } = modal
       const issue = 'issue' in modal ? modal.issue : undefined
       const issues = 'issues' in modal ? modal.issues : []
@@ -626,8 +628,6 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState('')
       const [revision, retryRead] = useState(0)
       const [plans, setPlans] = useState<Plan[]>()
-      const [repositories, setRepositories] = useState<Awaited<ReturnType<typeof mrRepos>>>([])
-      const [repoKey, setRepoKey] = useState('')
       const [planId, setPlan] = useState('')
       const [results, setResults] = useState<PlanResult[]>()
       const [draft, setDraft] = useState<Preview>()
@@ -636,7 +636,7 @@ window.__ModuleLoader__.load({
       const [notes, setNotes] = useState('')
       const [clarify, setClarify] = useState(false)
       const targetPending = issue ? pending[issue.id] || detail?.pendingTarget : ''
-      const title = { discuss: '发起讨论', add: '添加到计划', create: '创建计划', start: '直接开工',
+      const title = { discuss: '发起讨论', add: '添加到计划', start: '直接开工',
         publish: '回写预览', move: targetPending ? '回查状态' : '状态流转' }[kind]
 
       useEffect(() => {
@@ -656,14 +656,6 @@ window.__ModuleLoader__.load({
         if (kind === 'move' && !targetPending) rpc<typeof states>('statuses', base, abort.signal).then(setStates, failure)
         return () => abort.abort()
       }, [revision])
-      useEffect(() => {
-        if (kind !== 'create' || !workspaceId) return
-        const abort = new AbortController()
-        rpc<Awaited<ReturnType<typeof mrRepos>>>('mrRepos', { workspaceId }, abort.signal).then(rows => {
-          if (!abort.signal.aborted) setRepositories(rows)
-        }, () => { /* The root repository can still be checked when the form is submitted. */ })
-        return () => abort.abort()
-      }, [kind, workspaceId])
 
       async function run(operation: () => Promise<void>) {
         if (busy) return
@@ -672,12 +664,7 @@ window.__ModuleLoader__.load({
         finally { setBusy(false) }
       }
 
-      async function submit(form: HTMLFormElement) {
-        if (kind === 'create') {
-          const values = Object.fromEntries(new FormData(form))
-          const plan = await rpc<Plan>('createPlan', { ...base, ...values })
-          close(); props.onPlan(plan, { project, workspaceId })
-        }
+      async function submit() {
         if (kind === 'add') {
           const ids = results ? results.filter(row => row.retryable).map(row => row.id) : issues.map(row => row.id)
           const update = await rpc<PlanResult[]>('addToPlan', { ...base, planId, ids })
@@ -722,11 +709,11 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const canSubmit = kind === 'create' && project && workspaceId || kind === 'start' && (detail || props.detailError && notes.trim()) ||
+      const canSubmit = kind === 'start' && (detail || props.detailError && notes.trim()) ||
         kind === 'add' && planId && (!results || results.some(row => row.retryable)) ||
         kind === 'publish' && draft && draft.receipts.some(receipt => !receipt) ||
         kind === 'move' && (targetPending || target)
-      let action = { discuss: '', add: results ? '重试未完成项' : '确认加入', create: '创建计划',
+      let action = { discuss: '', add: results ? '重试未完成项' : '确认加入',
         start: detail?.sessionId ? '返回绑定会话' : '确认开工',
         publish: draft?.receipts.some(Boolean) ? '重试未发布评论' : '确认发布',
         move: targetPending ? '仅回查' : '确认流转并回查' }[kind]
@@ -734,30 +721,14 @@ window.__ModuleLoader__.load({
 
       return <dialog className="dy-yx dy-yx-dialog" ref={element} aria-labelledby="dy-yx-dialog-title"
         onCancel={event => { event.preventDefault(); if (!busy) close() }}>
-        <form onSubmit={event => { event.preventDefault(); void run(() => submit(event.currentTarget)) }}>
+        <form onSubmit={event => { event.preventDefault(); void run(submit) }}>
           <h2 id="dy-yx-dialog-title">{title}</h2>
           {issue && <p>{issue.reference} · {issue.title}</p>}
           {issues.length > 0 && <ol>{issues.map(row => <li key={row.id}>{row.reference} · {row.title}</li>)}</ol>}
-          {(kind === 'discuss' || kind === 'add' || kind === 'create' && !selectPlanScope) &&
+          {(kind === 'discuss' || kind === 'add') &&
             <p>目标工作区 · {meta?.workspaces.find(item => item.id === workspaceId)?.name}</p>}
           <fieldset disabled={busy}>
             {kind === 'discuss' && <p>讨论流程待定。</p>}
-            {kind === 'create' && <>
-              {selectPlanScope && <>
-                <label>云效项目<select value={project} onChange={event => setPlanProject(event.target.value)}>
-                  {meta?.projects.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
-                <label>目标工作区<select value={workspaceId} onChange={event => {
-                  setPlanWorkspace(event.target.value); setRepositories([]); setRepoKey('')
-                }}>{meta?.workspaces.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
-              </>}
-              <label>计划名称<input name="name" required maxLength={100} /></label>
-              {repositories.some(row => row.key !== '.') && <label>仓库<select value={repoKey} name="repositoryKey" onChange={event => setRepoKey(event.target.value)}>
-                <option value="">工作区根目录</option>
-                {repositories.filter(row => row.key !== '.').map(row => <option key={row.key} value={row.key}>{row.name} · {row.key}</option>)}
-              </select></label>}
-              <label>已有本地分支<input name="branch" required placeholder="feature/example" /></label>
-              <label>计划完成日期<input type="date" name="end" required /></label>
-            </>}
             {kind === 'add' && <>
               {!plans && !error && <p>正在读取计划…</p>}
               {plans?.length === 0 && <p>本工作区暂无可用计划。 {props.onCreate &&
@@ -858,9 +829,8 @@ window.__ModuleLoader__.load({
         <div className="dy-wb-content" hidden={module !== 'issues'}>{visited.issues && <Panel {...props} plansChanged={changed} openPlan={openPlan} />}</div>
         <div className="dy-wb-content" hidden={module !== 'plans'}>{visited.plans && <Plans selected={plan} revision={revision}
           openPlan={openPlan} openMr={ref => openMr(ref, 'plan')} changed={changed}
-          renderCreate={(scope, meta, close, saved) => <Dialog modal={{ kind: 'create', issues: [] }} detailError="" meta={meta}
-            {...scope} selectPlanScope close={close} refresh={changed} pending={{}} setPending={() => {}} onSuccess={() => {}}
-            onPlan={saved} onOpenSession={() => {}} />} />}</div>
+          renderCreate={(scope, meta, close, saved) => <CreatePlanDialog
+            scope={scope} meta={meta} selectScope close={close} saved={saved} />} />}</div>
         <div className="dy-wb-content" hidden={module !== 'requests' || !!mr}>{visited.requests && <Requests revision={revision}
           active={module === 'requests' && !mr} openMr={openMr} />}</div>
         {module === 'requests' && mr && <div className="dy-wb-content"><RequestDetail
