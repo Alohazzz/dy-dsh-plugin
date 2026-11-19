@@ -1,3 +1,5 @@
+import { researchSummary } from './research-questions.ts'
+import type { ResearchSummary, ResearchRow } from './research-prototype.ts'
 import type * as ReactType from 'react'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
@@ -5,6 +7,7 @@ import { mrReviewCommentLimit, type Meta, type MrRef, type MrReviewComment, type
   type PlanDetails, type PlanIssue, type PlanKey, type PlanRow } from './contracts.ts'
 import type { codeupApi } from './codeup.mjs'
 import type { deliveryOptions, mrRepos } from './merge-request.ts'
+import { createResearchPrototype } from './research-prototype-panel.tsx'
 import { createMrPanel, type Rpc } from './mr-panel.tsx'
 
 type Codeup = ReturnType<typeof codeupApi>
@@ -25,6 +28,7 @@ const planStatus = (plan: Plan, status?: string) => !plan.delivery ? '分支待�
 
 export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
   const { useEffect, useMemo, useRef, useState } = React
+  const PlanResearch = createResearchPrototype(React, rpc)
   const MrPanel = createMrPanel(React, rpc)
 
   function useRead<T>(method: string, input: object | undefined, revision = 0) {
@@ -62,16 +66,24 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       <tbody>{children}</tbody>
     </table></div>
   }
-  function Modal({ label, drawer, busy, close, children }: {
-    label: string; drawer?: boolean; busy: boolean; close(): void; children: ReactType.ReactNode
+  function Modal({ label, drawer, busy, close, children, dismissOnBackdrop }: {
+    label: string; drawer?: boolean; dismissOnBackdrop?: boolean; busy: boolean; close(): void; children: ReactType.ReactNode
   }) {
     const element = useRef<HTMLDialogElement>(null)
+    const outside = useRef(false)
+    function isOnBackdrop(event: ReactType.MouseEvent<HTMLDialogElement> | ReactType.PointerEvent<HTMLDialogElement>) {
+      if (event.target !== event.currentTarget) return false
+      const box = event.currentTarget.getBoundingClientRect()
+      return event.clientX < box.left || event.clientX >= box.right || event.clientY < box.top || event.clientY >= box.bottom
+    }
     useEffect(() => {
       const dialog = element.current!
       dialog.showModal()
       return () => dialog.close()
     }, [])
     return <dialog ref={element} className={'dy-yx dy-yx-dialog' + (drawer ? ' dy-delivery-drawer' : '')} aria-label={label}
+      onPointerDown={event => { outside.current = isOnBackdrop(event) }}
+      onClick={event => { if (dismissOnBackdrop && !busy && outside.current && isOnBackdrop(event)) close() }}
       onCancel={event => { event.preventDefault(); if (!busy) close() }}>{children}</dialog>
   }
 
@@ -148,13 +160,24 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </Modal>
   }
 
-  function IssueTable({ issues, remove }: { issues: PlanIssue[]; remove(issue: PlanIssue): void }) {
-    return <Table headers={['议题编号', '标题', '负责人', '云效状态', '操作']}>
-      {issues.map(issue => <tr key={issue.id}><td>{issue.url ? <a href={issue.url} target="_blank" rel="noreferrer">{issue.reference}</a> : issue.reference}</td>
+  function IssueTable({ issues, remove, summaries, open, finalize, busy, unavailable, legacy, openSession }: {
+    issues: PlanIssue[]; remove(issue: PlanIssue): void; summaries?: ResearchSummary[]; open(id: string): void
+    finalize(row: ResearchSummary): void; busy: boolean; unavailable: boolean; legacy: boolean; openSession(id: string): void
+  }) {
+    return <Table headers={['议题编号', '标题', '负责人', '云效状态', '方案状态', '操作']}>
+      {issues.map(issue => {
+        const row = summaries?.find(s => s.issueId === issue.id)
+        return <tr key={issue.id}><td>{issue.url ? <a href={issue.url} target="_blank" rel="noreferrer">{issue.reference}</a> : issue.reference}</td>
         <td>{issue.error || issue.title || '—'}</td><td>{issue.owner || '—'}</td><td>{issue.state.name || '—'}</td>
-        <td><button type="button" className="dy-delivery-link" aria-label={'移出计划 ' + issue.reference}
-          onClick={() => remove(issue)}>移出计划</button></td></tr>)}
-      {!issues.length && <tr><td colSpan={5} className="dy-delivery-issue-empty">暂无计划议题</td></tr>}
+        <td>{summaries ? <div className="dy-plan-issue-actions"><Status label={row?.label || '未调研'} />{row?.progress && row.progress !== row.label && <Status label={row.progress} />}</div> : unavailable ? '状态不可用' : '读取中…'}</td>
+        <td><div className="dy-plan-issue-actions">
+          {row && (row.version > 0 || row.label === '调研失败') && <button className="dy-delivery-link" onClick={() => open(issue.id)}>
+            {row.version ? '查看 v' + row.version : '查看失败原因'}</button>}
+          {row && <button className="dy-delivery-link" onClick={() => openSession(row.sessionId)}>查看会话</button>}
+          {row?.canFinalize && <button title={legacy ? '请在新版 DSH 工作台定稿' : undefined} disabled={busy || legacy} onClick={() => finalize(row)}>标记定稿</button>}
+          <button type="button" className="dy-delivery-link" aria-label={'移出计划 ' + issue.reference}
+          onClick={() => remove(issue)}>移出计划</button></div></td></tr>})}
+      {!issues.length && <tr><td colSpan={6} className="dy-delivery-issue-empty">暂无计划议题</td></tr>}
     </Table>
   }
 
@@ -190,8 +213,8 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </Modal>
   }
 
-  function PlanDetail({ scope, meta, revision, back, openMr, changed }: {
-    scope: PlanKey; meta?: Meta; revision: number; back(): void; openMr(ref: MrRef): void; changed(): void
+  function PlanDetail({ scope, meta, revision, back, openMr, changed, openSession }: {
+    scope: PlanKey; meta?: Meta; revision: number; back(): void; openSession(id: string): void; openMr(ref: MrRef): void; changed(): void
   }) {
     const result = useRead<PlanDetails>('workbenchPlan', scope, revision)
     const [modal, setModal] = useState<'configure' | 'link' | 'create'>()
@@ -199,6 +222,64 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const [notice, setNotice] = useState('')
     const [removing, setRemoving] = useState<PlanIssue>()
     const detail = result.value
+    const [answering, setAnswering] = useState(false)
+    const [previewIssue, setPreviewIssue] = useState<string>()
+    const [startingResearch, setStartingResearch] = useState(false)
+    const [startError, setStartError] = useState('')
+    const batch = useRead<{ batchId: string; rows: ResearchRow[] }>('planResearch', detail?.plan.members.length ? scope : undefined, revision)
+    const batchId = batch.value?.batchId
+    const [summaries, setSummaries] = useState<ResearchSummary[]>()
+    const [legacy, setLegacy] = useState(false)
+    const [summaryError, setSummaryError] = useState('')
+    useEffect(() => {
+      if (!batchId || answering) return
+      const abort = new AbortController()
+      let timer: ReturnType<typeof setTimeout>
+      let useLegacy = false
+      async function poll() {
+        try {
+          let next: ResearchSummary[] | undefined
+          if (!useLegacy) {
+            try { next = await rpc<ResearchSummary[]>('researchSummaries', { batchId }, abort.signal) }
+            catch (e) {
+              if (errorText(e) !== '未知云效操作') throw e
+              useLegacy = true
+            }
+          }
+          if (!next) next = (await rpc<ResearchRow[]>('researchStatus', { batchId }, abort.signal)).map(researchSummary)
+          if (!abort.signal.aborted) { setSummaries(next); setLegacy(useLegacy); setSummaryError('') }
+        } catch (e) { if (!abort.signal.aborted) setSummaryError(errorText(e)) }
+        if (!abort.signal.aborted) timer = setTimeout(poll, 1800)
+      }
+      void poll()
+      return () => { abort.abort(); clearTimeout(timer) }
+    }, [batchId, answering])
+    const needsResearch = summaries && detail?.plan.members.some(id => {
+      const row = summaries.find(item => item.issueId === id)
+      return !row || (row.version === 0 && row.label === '调研失败')
+    })
+    async function startResearch() {
+      if (!needsResearch || startingResearch) return
+      setStartingResearch(true)
+      setStartError('')
+      try {
+        const started = await rpc<{ rows: ResearchRow[] }>('planResearch', { ...scope, start: true })
+        setSummaries(started.rows.map(researchSummary))
+      } catch (error) {
+        setStartError(errorText(error))
+      } finally {
+        setStartingResearch(false)
+      }
+    }
+    async function finalize(row: ResearchSummary) {
+      setBusy(true)
+      try {
+        const next = await rpc<ResearchSummary>('researchFinalize', { batchId, sessionId: row.sessionId, version: row.version })
+        setSummaries(old => old?.map(r => r.sessionId === next.sessionId ? next : r))
+        setNotice('已定稿 · v' + row.version)
+      } catch (e) { setNotice(errorText(e)) } finally { setBusy(false) }
+    }
+    const questionCount = summaries?.filter(r => detail?.plan.members.includes(r.issueId || '')).reduce((n, r) => n + (r.count || 0), 0) || 0
     const target = detail?.plan.delivery?.target || detail?.plan.targetBranch
     function done(ref?: MrRef) {
       setNotice(ref ? (modal === 'link' ? '已关联 MR !' : '已关联计划与 MR !') + ref.localId : '已保存交付分支')
@@ -206,6 +287,9 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       changed()
     }
     const refreshOnClose = () => { setModal(undefined); result.retry() }
+    const researchPlan = detail && { ...scope, name: detail.plan.name, members: detail.plan.members }
+    if (answering && researchPlan) return <PlanResearch initialReview workspaceId={scope.workspaceId} openSession={openSession}
+      plan={researchPlan} close={() => setAnswering(false)} />
     return <div className="dy-delivery-stack dy-plan-detail">
       <header className="dy-plan-header">
         <div className="dy-yx-actions dy-plan-toolbar">
@@ -245,8 +329,16 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           {detail.plan.kind && <div><dt>代码目录</dt><dd>{detail.plan.worktree || '主工作区'}</dd></div>}
         </dl>{detail.mrError && <Problem error={detail.mrError} retry={result.retry} />}
       </section><section className="dy-delivery-card" aria-label="计划议题">
-        <div className="dy-delivery-section dy-plan-title"><h3>计划议题</h3><small>{detail.plan.members.length} 条</small></div>
-        <IssueTable issues={detail.issues} remove={setRemoving} /></section>
+        <div className="dy-delivery-section dy-plan-title"><h3>计划议题</h3><small>{detail.plan.members.length} 条</small><button disabled={!needsResearch || startingResearch} onClick={startResearch}>{startingResearch ? '正在派发…' : '方案调研'}</button>
+          <button disabled={!questionCount} onClick={() => setAnswering(true)}>批量答疑{questionCount > 0 && '（' + questionCount + '）'}</button></div>
+        {(batch.error || summaryError) && <Problem error={batch.error || summaryError!} retry={batch.retry} />}
+        {startError && <Problem error={startError} retry={startResearch} />}
+        <IssueTable openSession={openSession} issues={detail.issues} remove={setRemoving} summaries={summaries} busy={busy} unavailable={!!(summaryError || batch.error)} legacy={legacy} open={setPreviewIssue} finalize={finalize} /></section>
+      {previewIssue && researchPlan && <Modal label="方案预览" drawer dismissOnBackdrop busy={false} close={() => setPreviewIssue(undefined)}>
+        <header><h2>方案预览</h2><button onClick={() => setPreviewIssue(undefined)}>关闭</button></header>
+        <PlanResearch initialIssue={previewIssue} workspaceId={scope.workspaceId} openSession={openSession}
+          plan={researchPlan} close={() => setPreviewIssue(undefined)} />
+      </Modal>}
       {removing && <RemoveIssue scope={scope} issue={removing} close={() => setRemoving(undefined)} removed={() => {
         setNotice('已移出计划 · ' + removing.reference)
         setRemoving(undefined)
@@ -261,8 +353,8 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </div>
   }
 
-  function Plans({ selected, revision, openPlan, openMr, changed, renderCreate }: {
-    selected?: PlanKey; revision: number; openPlan(plan?: PlanKey): void; openMr(ref: MrRef): void; changed(): void
+  function Plans({ selected, revision, openPlan, openMr, changed, renderCreate, openSession }: {
+    selected?: PlanKey; revision: number; openSession(id: string): void; openPlan(plan?: PlanKey): void; openMr(ref: MrRef): void; changed(): void
     renderCreate(scope: Scope, meta: Meta, close: () => void, saved: (plan?: Plan, scope?: Scope) => void): ReactType.ReactNode
   }) {
     const meta = useRead<Meta>('meta', {}, revision)
@@ -278,7 +370,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     ].some(value => value?.toLowerCase().includes(term)))
     return <main className="dy-yx dy-delivery">
       {selected ? <PlanDetail key={JSON.stringify(selected)} scope={selected} meta={meta.value} revision={revision}
-        back={() => openPlan()} openMr={openMr} changed={changed} /> : <>
+        back={() => openPlan()} openMr={openMr} changed={changed} openSession={openSession} /> : <>
         <header><h2>交付计划</h2><div className="dy-yx-actions">
           <button onClick={() => { meta.retry(); result.retry() }}>刷新</button>
           <button className="dy-yx-primary" disabled={!meta.value?.projects.length || !meta.value?.workspaces.length}

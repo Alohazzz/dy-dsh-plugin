@@ -1,4 +1,5 @@
 import { createDeliveryPanels } from './delivery-panels.tsx'
+import { createResearchPrototype } from './research-prototype-panel.tsx'
 import { createPlanDialog } from './create-plan-dialog.tsx'
 import type * as ReactType from 'react'
 import { createSkillPanel } from './skill-panel.tsx'
@@ -89,6 +90,7 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const { Plans, Requests, RequestDetail } = createDeliveryPanels(React, rpc)
     const CreatePlanDialog = createPlanDialog(React, rpc)
+    const ResearchPrototype = createResearchPrototype(React, rpc)
     const { useEffect, useRef, useState } = React
 
     function Multi({ title, options, values, change }: {
@@ -213,6 +215,7 @@ window.__ModuleLoader__.load({
       const [detail, setDetail] = useState<Details>()
       const [detailError, setDetailError] = useState('')
       const [marked, setMarked] = useState<Issue[]>([])
+      const [researchIssues, setResearchIssues] = useState<Issue[]>()
       const [modal, setModal] = useState<Modal>()
       const [addAfterCreate, setAddAfterCreate] = useState<Issue[]>()
       const [settingsOpen, setSettingsOpen] = useState(false)
@@ -317,12 +320,14 @@ window.__ModuleLoader__.load({
         setModal({ kind, issue })
       }
 
+      if (researchIssues) return <ResearchPrototype issues={researchIssues} workspaceId={workspaceId} close={() => setResearchIssues(undefined)} openSession={id => ctx.uiWorkspace.openSession(id)} />
       if (!meta && !metaError) return <main className="dy-yx">正在读取 DSH 工作区与云效配置…</main>
       return <main className="dy-yx">
         <header><div><h2>云效议题</h2><small>{meta?.user ? '已连接 · ' + meta.organization + ' · ' + meta.user : '云效连接待配置'}</small></div>
           <div className="dy-yx-actions">
             <button onClick={() => refresh(value => value + 1)}>刷新</button>
             <button onClick={() => void connect()}>重新连接</button>
+            <button disabled={marked.length !== 0 && (marked.length !== 2 || !workspaceId)} onClick={() => setResearchIssues(marked)}>双议题调研原型</button>
             <button className={meta?.setupError ? 'dy-yx-primary' : undefined} onClick={() => setSettingsOpen(true)}>连接设置</button>
           </div>
         </header>
@@ -828,7 +833,7 @@ window.__ModuleLoader__.load({
         </div>
         <div className="dy-wb-content" hidden={module !== 'issues'}>{visited.issues && <Panel {...props}
           plansRevision={revision} plansChanged={changed} openPlan={openPlan} />}</div>
-        <div className="dy-wb-content" hidden={module !== 'plans'}>{visited.plans && <Plans selected={plan} revision={revision}
+        <div className="dy-wb-content" hidden={module !== 'plans'}>{visited.plans && <Plans selected={plan} revision={revision} openSession={id => props.ctx.uiWorkspace.openSession(id)}
           openPlan={openPlan} openMr={ref => openMr(ref, 'plan')} changed={changed}
           renderCreate={(scope, meta, close, saved) => <CreatePlanDialog
             scope={scope} meta={meta} selectScope close={close} saved={saved} />} />}</div>

@@ -1,12 +1,14 @@
+import { researchSkill } from './research-skill.ts'
 import { deliveryOptions, mrPreview, mrRepos, submitMr, workspaceRepository, type MrInput } from './merge-request.ts'
 import { createMrReviews, reviewSessionPrefix } from './mr-review.ts'
 import { issueMaterials } from './issue-materials.ts'
+import { exampleIssues, createResearch } from './research-prototype.ts'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { checkPlanBranch, planWorktree } from './plan-git.ts'
 import { createConnectionSettings, type CredentialStore } from './connection-settings.ts'
-import { createHandler, descriptionOf } from './yunxiao.mjs'
+import { createHandler, descriptionOf, digest } from './yunxiao.mjs'
 import { createWorkflow, executionSkill, label, projectOf } from './workflow.ts'
 import type { Details, Issue, IssueKey, Meta, MrRef, Option, Plan, PlanCreate, PlanDetails, PlanKey, PlanRow, Search } from './contracts.ts'
 import { createSkillSources } from './skill-sources.ts'
@@ -42,7 +44,7 @@ type Context = {
   workspaceRegistry: { list(): Workspace[]; get(id: string): Workspace | undefined }
   sessionController: {
     list(input: Record<string, never>, signal: AbortSignal): Promise<{ items: SessionSummary[] }>
-    create(input: { sessionId: string; cwd?: string; workspaceId?: string; agentPreset?: string }): Promise<unknown>
+    create(input: { sessionId: string; cwd?: string; workspaceId?: string; agentPreset?: string }): Promise<{ sessionId?: string } | undefined>
     prompt(input: { sessionId: string; requestId: string; mode: 'queue'; content: { type: 'text'; text: string }[] }, signal: AbortSignal): Promise<unknown>
     resolveAgent(id: string): Promise<{ agent?: { session: { append(event: string, payload: object): unknown } } }>
     wait(input: { sessionId: string; timeoutMs: number; maxMessages: number }, signal: AbortSignal): Promise<ReviewWait>
@@ -108,6 +110,7 @@ export function apply(ctx: Context) {
     'MR 只读审查会话禁用工具，仅使用宿主提供的 Git 证据。' : undefined)
   ctx.inject(['skills'], scope => {
     scope.skills.register(executionSkill)
+    scope.skills.register(researchSkill)
     scope.skills.registerProvider(installations.provider)
   })
   async function hasSessionSkill(sessionId: string, name: string) {
@@ -320,7 +323,40 @@ export function apply(ctx: Context) {
     return { plan, issues, ...state }
   }
 
+  const research = createResearch(ctx.sessionController, join(home, 'research'), hasSessionSkill)
   const methods = {
+    async planResearch(input: PlanKey & { start?: boolean }) {
+      const api = await settings.client()
+      const plan = await readPlan(api, input)
+      const batchId = digest(JSON.stringify([api.organization, input.workspaceId, input.project, plan.id]))
+      const rows = research.status({ batchId }).filter(row => row.issueId && plan.members.includes(row.issueId))
+      if (!input.start) return { batchId, rows }
+      const key = plan.repositoryKey || plan.delivery?.key
+      const root = planDirectory(input)
+      const repo = key ? await workspaceRepository(root, key) : root
+      const cwd = plan.worktree ? await planWorktree(repo, plan.worktree) : repo
+      const missing = plan.members.filter(id => !rows.some(r => r.issueId === id && (r.status !== 'failed' || r.drafts.length)))
+      const inputs = await inBatches(missing, async id => {
+        const item = await detail({ ...input, id })
+        return { id, title: item.reference + ' ' + item.title, text: [item.text, item.materialsError].filter(Boolean).join('\n') }
+      })
+      research.start(cwd, inputs, batchId)
+      return { batchId, rows: research.status({ batchId }).filter(row => row.issueId && plan.members.includes(row.issueId)) }
+    },
+    async researchStart({ workspaceId, issues }: { workspaceId: string; issues: IssueKey[] }) {
+      if (!Array.isArray(issues) || (issues.length !== 0 && issues.length !== 2)) throw new Error('请选择两个不同议题')
+      if (issues.length && (!workspaceId || issues[0].id === issues[1].id)) throw new Error('请选择工作区和两个不同议题')
+      const cwd = workspaceId ? workspace(workspaceId).path : dirname(import.meta.dirname)
+      const inputs = issues.length ? await Promise.all(issues.map(async key => {
+        const issue = await detail({ ...key, workspaceId })
+        return { title: issue.reference + ' ' + issue.title, text: issue.text }
+      })) : exampleIssues
+      return research.start(cwd, inputs)
+    },
+    researchStatus: research.status,
+    researchSummaries: research.summaries,
+    researchFinalize: research.finalize,
+    researchRevise: research.revise,
     pullMrSnapshot: reviews.pull,
     startMrReview: reviews.start,
     mrReview: reviews.status,

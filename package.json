@@ -18,6 +18,7 @@
   },
   "files": [
     "dist",
+    "skills/yunxiao-dsh-research/SKILL.md",
     "cordis.patch.yml",
     "README.md"
   ],
