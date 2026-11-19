@@ -1,8 +1,8 @@
 import { writingInstructions } from './writing-skill.mjs'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { mrReviewCommentLimit, type MrRef, type MrReviewComment, type MrReviewView, type MrSnapshot } from './contracts.ts'
+import { mrReviewCommentLimit, type MrPull, type MrRef, type MrReviewComment, type MrReviewView, type MrSnapshot } from './contracts.ts'
 import { git } from './merge-request.ts'
 import { atomicJson, digest, readJson } from './yunxiao.mjs'
 import type { createSkillInstallations } from './skill-installations.ts'
@@ -30,6 +30,35 @@ const manualPath = 'references/csharp-dev-manual.md'
 const inputLimit = 160_000
 const reviewTimeout = 10 * 60_000
 const message = (error: unknown) => error instanceof Error ? error.message : String(error)
+
+async function reviewHistoryBoundary(directory: string, target: string, source: string, signal: AbortSignal) {
+  const shallow = await readFile(join(directory, '.git', 'shallow'), 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error
+    return ''
+  })
+  const boundary = shallow.trim().split(/\s+/).filter(Boolean)
+  if (boundary.length === 0) return
+  const base = await git(directory, ['merge-base', '--all', target, source], true, true, signal)
+  if (/^[a-f0-9]{40}$/.test(base)) {
+    // Every cut must be at or behind the shared base. A cut on either branch can hide a better base or MR commits.
+    const aboveBase = await git(directory, ['rev-list', target, source, '--not', base], false, true, signal)
+    const commits = new Set(aboveBase.split(/\s+/))
+    if (!boundary.some(commit => commits.has(commit))) return
+  }
+  return boundary.sort().join('\n')
+}
+
+export async function fetchReviewHistory(directory: string, target: string, source: string,
+  fetchDepth: (depth: number) => Promise<void>, signal: AbortSignal) {
+  let previousBoundary: string | undefined
+  for (let depth = 2; ; depth *= 4) {
+    await fetchDepth(depth)
+    const boundary = await reviewHistoryBoundary(directory, target, source, signal)
+    if (!boundary) return
+    if (boundary === previousBoundary) throw new Error('无法取得足够的 Git 历史来验证此 MR 的共同祖先')
+    previousBoundary = boundary
+  }
+}
 
 function reviewSkill(source: SkillSource) {
   return source.skills.find(skill => skill.name === skillName && !skill.stale &&
@@ -66,16 +95,24 @@ async function reviewPrompt(snapshot: MrSnapshot, localId: number, manual: strin
 export function createMrReviews(home: string, client: () => Promise<Client>, sources: () => SkillSource[],
   installations: Installations, host: Host) {
   const locks = new Map<string, Promise<unknown>>()
-  async function withMr<T>(reference: MrRef, action: (root: string, api: Client) => Promise<T>) {
+  const pulls = new Map<string, { controller: AbortController; state: MrPull }>()
+  const pending = (pull?: MrPull) => pull && (pull.status === 'running' || pull.status === 'cancelling' || pull.status === 'saving')
+  async function mrContext(reference: MrRef) {
     if (![reference.repositoryId, reference.localId].every(id => Number.isSafeInteger(id) && id > 0)) {
       throw new Error('无效的合并请求编号')
     }
     const api = await client()
-    const root = join(home, 'mr-reviews', digest(api.organization, reference.repositoryId, reference.localId))
-    const next = (locks.get(root) ?? Promise.resolve()).catch(() => {}).then(() => action(root, api))
+    return { root: join(home, 'mr-reviews', digest(api.organization, reference.repositoryId, reference.localId)), api }
+  }
+  async function serialize<T>(root: string, action: () => Promise<T>) {
+    const next = (locks.get(root) ?? Promise.resolve()).catch(() => {}).then(action)
     locks.set(root, next)
     try { return await next }
     finally { if (locks.get(root) === next) locks.delete(root) }
+  }
+  async function withMr<T>(reference: MrRef, action: (root: string, api: Client) => Promise<T>) {
+    const { root, api } = await mrContext(reference)
+    return serialize(root, () => action(root, api))
   }
 
   const snapshotFile = (root: string) => join(root, 'snapshot.json')
@@ -133,43 +170,113 @@ export function createMrReviews(home: string, client: () => Promise<Client>, sou
     })
   }
 
-  function pull(reference: MrRef) {
-    return withMr(reference, async (root, api) => {
-      const { snapshot, review } = await current(root)
-      if (review?.status === 'running') throw new Error('正在审查当前快照，请等待报告结束')
-      const { remote, source, target } = await api.codeup.reviewTarget(reference)
-      const id = digest(source.sha, target.sha, source.version)
-      if (snapshot?.id === id) return snapshot
-      await mkdir(root, { recursive: true, mode: 0o700 })
-      const folder = await mkdtemp(join(root, 'patch-'))
-      const directory = join(folder, 'checkout')
-      try {
-        await mkdir(directory)
-        await git(directory, ['init', '--template=', '--quiet'], false, true)
-        const fetch = (protocol: string, base: string, head: string) => git(directory, [
-          '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', '-c', 'http.followRedirects=false',
-          '-c', 'protocol.version=' + protocol, 'fetch', '--no-tags', '--no-recurse-submodules', '--', remote,
-          base + ':refs/dy-review/target', head + ':refs/dy-review/source',
-        ])
-        // Codeup may advertise patch refs but omit them from a protocol v2 fetch.
-        await fetch('2', target.sha, source.sha).catch(error => {
-          if (target.ref === target.sha && source.ref === source.sha) throw error
-          return fetch('0', target.ref, source.ref)
-        })
-        const [base, head] = await Promise.all([
-          git(directory, ['rev-parse', 'refs/dy-review/target^{commit}'], false, true),
-          git(directory, ['rev-parse', 'refs/dy-review/source^{commit}'], false, true),
-        ])
+  async function saveSnapshot(reference: MrRef, root: string, api: Client, signal: AbortSignal, saving: () => void) {
+    const { snapshot, review } = await current(root)
+    signal.throwIfAborted()
+    if (review?.status === 'running') throw new Error('正在审查当前快照，请等待报告结束')
+    const { remote, source, target } = await api.codeup.reviewTarget(reference, signal)
+    signal.throwIfAborted()
+    const id = digest(source.sha, target.sha, source.version)
+    if (snapshot?.id === id) return
+    await mkdir(root, { recursive: true, mode: 0o700 })
+    const previous = await readdir(root, { withFileTypes: true })
+    signal.throwIfAborted()
+    const folder = await mkdtemp(join(root, 'patch-'))
+    const directory = join(folder, 'checkout')
+    const runGit = (args: string[], localOnly = true) => git(directory, args, false, localOnly, signal)
+    try {
+      await mkdir(directory)
+      await runGit(['init', '--template=', '--quiet'])
+      const targetRef = 'refs/dy-review/target'
+      const sourceRef = 'refs/dy-review/source'
+      const refspecs = (base: string, head: string) => [base + ':' + targetRef, head + ':' + sourceRef]
+      async function verifyPinned() {
+        const refs = await runGit(['rev-parse', targetRef + '^{commit}', sourceRef + '^{commit}'])
+        const [base, head] = refs.split(/\r?\n/)
         if (base !== target.sha || head !== source.sha) throw new Error('远端补丁集已变化，请刷新后重新拉取')
-        await git(directory, ['checkout', '--detach', '--quiet', '--no-recurse-submodules', head], false, true)
-        const result: MrSnapshot = { id, source: head, target: base, version: source.version, directory }
-        await atomicJson(snapshotFile(root), result)
-        return result
-      } catch (error) {
-        await rm(folder, { recursive: true, force: true })
-        throw error
       }
+      let fetchedLocally = false
+      for (const entry of previous) {
+        if (!entry.isDirectory() || !entry.name.startsWith('patch-')) continue
+        const cached = join(root, entry.name, 'checkout')
+        const gitDir = join(cached, '.git')
+        try {
+          if (!(await lstat(cached)).isDirectory() || !(await lstat(gitDir)).isDirectory()) continue
+          const refs = await git(cached, ['rev-parse', targetRef + '^{commit}', sourceRef + '^{commit}'], false, true, signal)
+          const [base, head] = refs.split(/\r?\n/)
+          if (base !== target.sha || head !== source.sha) continue
+          await runGit(['-c', 'protocol.allow=never', '-c', 'protocol.file.allow=always',
+            'fetch', '--update-shallow', '--no-tags', '--no-recurse-submodules', '--', gitDir, ...refspecs(target.sha, source.sha)])
+          await verifyPinned()
+          if (await reviewHistoryBoundary(directory, target.sha, source.sha, signal)) continue
+          fetchedLocally = true
+          break
+        } catch {
+          signal.throwIfAborted()
+        }
+      }
+      const fetch = (protocol: string, base: string, head: string, depth: number) => runGit([
+        '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always', '-c', 'http.followRedirects=false',
+        '-c', 'protocol.version=' + protocol, 'fetch', '--depth=' + depth, '--no-tags', '--no-recurse-submodules', '--', remote,
+        ...refspecs(base, head),
+      ], false)
+      let usePatchRefs = false
+      if (!fetchedLocally) await fetchReviewHistory(directory, target.sha, source.sha, async depth => {
+        // Codeup may advertise patch refs but omit them from a protocol v2 fetch.
+        if (!usePatchRefs) {
+          try { await fetch('2', target.sha, source.sha, depth) }
+          catch (error) {
+            signal.throwIfAborted()
+            if (target.ref === target.sha && source.ref === source.sha) throw error
+            usePatchRefs = true
+          }
+        }
+        if (usePatchRefs) await fetch('0', target.ref, source.ref, depth)
+        await verifyPinned()
+      }, signal)
+      const longPaths = process.platform === 'win32' ? ['-c', 'core.longpaths=true'] : []
+      await runGit([...longPaths, 'checkout', '--detach', '--quiet', '--no-recurse-submodules', source.sha])
+      const result: MrSnapshot = { id, source: source.sha, target: target.sha, version: source.version, directory }
+      signal.throwIfAborted()
+      saving()
+      await atomicJson(snapshotFile(root), result)
+    } catch (error) {
+      await rm(folder, { recursive: true, force: true, maxRetries: 5 }).catch(() => {
+        throw new Error('无法清理本次拉取的临时目录')
+      })
+      throw error
+    }
+  }
+
+  async function pull(reference: MrRef) {
+    const { root, api } = await mrContext(reference)
+    const existing = pulls.get(root)
+    if (existing && pending(existing.state)) return { id: existing.state.id }
+    const id = randomUUID()
+    const task: { controller: AbortController; state: MrPull } = {
+      controller: new AbortController(), state: { id, status: 'running' },
+    }
+    pulls.set(root, task)
+    const { signal } = task.controller
+    void serialize(root, () => saveSnapshot(reference, root, api, signal, () => {
+      task.state = { id, status: 'saving' }
+    })).then(() => {
+      if (signal.aborted) task.state = { id, status: 'cancelled' }
+      else pulls.delete(root)
+    }, error => {
+      task.state = signal.aborted && error === signal.reason ? { id, status: 'cancelled' } :
+        { id, status: 'failed', error: message(error) }
     })
+    return { id }
+  }
+
+  async function cancelPull(reference: MrRef & { id: string }) {
+    const { root } = await mrContext(reference)
+    const task = pulls.get(root)
+    if (task?.state.status === 'running' && task.state.id === reference.id) {
+      task.state = { id: reference.id, status: 'cancelling' }
+      task.controller.abort()
+    }
   }
 
   function start(input: MrRef & { snapshotId: string; sourceId: string }) {
@@ -203,12 +310,15 @@ export function createMrReviews(home: string, client: () => Promise<Client>, sou
     })
   }
 
-  function status(reference: MrRef): Promise<MrReviewView> {
-    return withMr(reference, async root => {
+  async function status(reference: MrRef): Promise<MrReviewView> {
+    const { root } = await mrContext(reference)
+    async function readStatus(settleReview: boolean): Promise<MrReviewView> {
+      const pull = pulls.get(root)?.state
       const { snapshot, review } = await current(root)
-      const view: MrReviewView = { snapshot, sources: sources().filter(reviewSkill).map(item => ({ id: item.id, label: item.name })) }
+      const view: MrReviewView = { snapshot, pull,
+        sources: sources().filter(reviewSkill).map(item => ({ id: item.id, label: item.name })) }
       if (!snapshot || !review) return view
-      if (review.status === 'running') {
+      if (settleReview && review.status === 'running') {
         let error = ''
         let markdown = ''
         if (Date.now() - review.startedAt > reviewTimeout) error = '审查超时，请重新运行'
@@ -240,8 +350,9 @@ export function createMrReviews(home: string, client: () => Promise<Client>, sou
       }
       return { ...view, review: { status: review.status, markdown: review.markdown, error: review.error },
         comment: commentOf(snapshot, review) }
-    })
+    }
+    return pending(pulls.get(root)?.state) ? readStatus(false) : serialize(root, () => readStatus(true))
   }
 
-  return { pull, start, status, publish }
+  return { pull, cancelPull, start, status, publish }
 }

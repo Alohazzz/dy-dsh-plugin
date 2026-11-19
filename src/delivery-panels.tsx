@@ -533,10 +533,11 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const [readError, setReadError] = useState('')
     const [actionError, setActionError] = useState('')
     const [source, setSource] = useState('')
-    const [busy, setBusy] = useState<'pull' | 'review'>()
+    const [busy, setBusy] = useState<'pull' | 'cancel' | 'review'>()
     const [preview, setPreview] = useState(false)
     const [revision, refresh] = useState(0)
     const snapshot = value?.snapshot
+    const pull = value?.pull
     const review = value?.review
     const comment = value?.comment
     const selected = value?.sources.find(row => row.id === source) ?? value?.sources[0]
@@ -549,26 +550,30 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     useEffect(() => {
       const abort = new AbortController()
       let timer: ReturnType<typeof setTimeout>
+      let polling = false
       async function load() {
         try {
           const result = await rpc<MrReviewView>('mrReview', { repositoryId, localId }, abort.signal)
           if (abort.signal.aborted) return
           setReadError('')
           setValue(result)
-          if (result.review?.status === 'running') timer = setTimeout(load, 1200)
+          const status = result.pull?.status
+          polling = status === 'running' || status === 'cancelling' || status === 'saving' || result.review?.status === 'running'
         } catch (error) {
           if (!abort.signal.aborted) setReadError(errorText(error))
         }
+        if (polling && !abort.signal.aborted) timer = setTimeout(load, 1200)
       }
       void load()
       return () => { abort.abort(); clearTimeout(timer) }
     }, [repositoryId, localId, revision])
 
-    async function run(action: 'pull' | 'review') {
+    async function run(action: 'pull' | 'cancel' | 'review') {
       setBusy(action)
       setActionError('')
       try {
         if (action === 'pull') await rpc('pullMrSnapshot', { repositoryId, localId })
+        if (action === 'cancel' && pull) await rpc('cancelMrSnapshotPull', { repositoryId, localId, id: pull.id })
         if (action === 'review' && snapshot && selected) {
           await rpc('startMrReview', { repositoryId, localId, snapshotId: snapshot.id, sourceId: selected.id })
         }
@@ -580,13 +585,19 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       }
     }
 
-    const blocked = !!busy || review?.status === 'running'
+    const pulling = busy === 'pull' || pull?.status === 'running'
+    const cancelling = busy === 'cancel' || pull?.status === 'cancelling'
+    const saving = pull?.status === 'saving'
+    const blocked = !value || !!busy || pulling || cancelling || saving || review?.status === 'running'
     return <section className="dy-delivery-card dy-delivery-section" aria-label="AI 合并审查">
       <h3>AI 合并审查</h3>
       <div className="dy-yx-actions">
         <button disabled={blocked} onClick={() => void run('pull')}>
-          {busy === 'pull' ? '正在拉取…' : snapshot ? '刷新本地快照' : '拉取 MR 到本地'}
+          {cancelling ? '正在取消…' : saving ? '正在保存快照…' : pulling ? '正在拉取…' : snapshot ? '刷新本地快照' : '拉取 MR 到本地'}
         </button>
+        {pull?.status === 'running' && <button type="button" disabled={!!busy} onClick={() => void run('cancel')}>
+          取消拉取
+        </button>}
         {value && value.sources.length > 1 && <label>审查技能源 <select value={selected?.id} disabled={blocked}
           onChange={event => setSource(event.target.value)}>
           {value.sources.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
@@ -597,6 +608,9 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       </div>
       {readError && <Problem error={readError} retry={() => refresh(n => n + 1)} />}
       {actionError && <p role="alert" className="dy-yx-error">{actionError}</p>}
+      {pull?.status === 'running' && !cancelling && <p role="status">拉取会在后台继续，可以离开此页面。</p>}
+      {pull?.status === 'cancelled' && !busy && <p role="status">已取消拉取。</p>}
+      {pull?.status === 'failed' && <p role="alert" className="dy-yx-error">{pull.error}</p>}
       {value?.sources.length === 0 && <p>请在技能管理绑定包含 merge-code-review 和公司开发手册的技能源。</p>}
       {snapshot && <div className="dy-yx-meta">
         <p>补丁版本 {snapshot.version} · <code>{snapshot.source.slice(0, 12)}</code> → <code>{snapshot.target.slice(0, 12)}</code></p>

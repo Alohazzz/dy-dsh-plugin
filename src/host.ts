@@ -364,6 +364,7 @@ export function apply(ctx: Context) {
     researchFinalize: research.finalize,
     researchRevise: research.revise,
     pullMrSnapshot: reviews.pull,
+    cancelMrSnapshotPull: reviews.cancelPull,
     startMrReview: reviews.start,
     mrReview: reviews.status,
     publishMrReviewComment: reviews.publish,

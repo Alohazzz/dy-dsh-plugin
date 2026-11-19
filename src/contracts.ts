@@ -19,12 +19,16 @@ export type Meta = {
 }
 export type MrRef = { repositoryId: number; localId: number }
 export type MrSnapshot = { id: string; source: string; target: string; version: number; directory: string }
+export type MrPull = { id: string } & (
+  { status: 'running' | 'cancelling' | 'saving' | 'cancelled' } | { status: 'failed'; error: string }
+)
 export type MrReviewSource = { id: string; label: string }
 export type MrReviewComment = { token: string; footer: string; pending?: boolean; id?: string }
 export const mrReviewCommentLimit = 65535
 export type MrReviewView = {
   sources: MrReviewSource[]
   snapshot?: MrSnapshot
+  pull?: MrPull
   review?: { status: 'running' | 'complete' | 'failed'; markdown?: string; error?: string }
   comment?: MrReviewComment
 }

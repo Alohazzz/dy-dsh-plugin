@@ -1,15 +1,181 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { deliveryOptions, mrRepos, mrPreview, submitMr } from '../src/merge-request.ts'
+import { deliveryOptions, git, mrRepos, mrPreview, submitMr } from '../src/merge-request.ts'
 import { codeupApi } from '../src/codeup.mjs'
 import { apply } from '../src/host.ts'
-import { createMrReviews } from '../src/mr-review.ts'
+import { createMrReviews, fetchReviewHistory } from '../src/mr-review.ts'
 import { digest } from '../src/yunxiao.mjs'
 import { createWorkflow } from '../src/workflow.ts'
+
+test('snapshot pull returns before network work ends and can be cancelled from a later request', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-pull-task-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const reference = { repositoryId: 2, localId: 5 }
+  const root = join(home, 'mr-reviews', digest('org', 2, 5))
+  const source = 'a'.repeat(40)
+  const target = 'b'.repeat(40)
+  const snapshot = { id: digest(source, target, 1), source, target, version: 1, directory: join(root, 'patch-existing', 'checkout') }
+  await mkdir(snapshot.directory, { recursive: true })
+  await writeFile(join(root, 'snapshot.json'), JSON.stringify(snapshot))
+  let calls = 0
+  let release
+  function reviewTarget(_reference, signal) {
+    calls++
+    return new Promise((resolve, reject) => {
+      release = () => resolve({ source: { sha: source, version: 1 }, target: { sha: target } })
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    })
+  }
+  const reviews = createMrReviews(home, async () => ({ organization: 'org', codeup: { reviewTarget } }), () => [], {}, {})
+  const first = await reviews.pull(reference)
+  assert.deepEqual(await reviews.pull(reference), first)
+  assert.deepEqual((await reviews.status(reference)).pull, { ...first, status: 'running' })
+  await waitFor(() => calls === 1)
+  await reviews.cancelPull({ ...reference, ...first })
+  await waitFor(async () => (await reviews.status(reference)).pull?.status === 'cancelled')
+  assert.deepEqual((await reviews.status(reference)).snapshot, snapshot)
+
+  const second = await reviews.pull(reference)
+  assert.notEqual(second.id, first.id)
+  await reviews.cancelPull({ ...reference, ...first })
+  assert.deepEqual((await reviews.status(reference)).pull, { ...second, status: 'running' })
+  await waitFor(() => calls === 2)
+  release()
+  await waitFor(async () => !(await reviews.status(reference)).pull)
+  assert.deepEqual((await reviews.status(reference)).snapshot, snapshot)
+  assert.equal(calls, 2)
+})
+
+test('cancelling a Git fetch closes the remote helper connection', { timeout: 15000 }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-cancel-git-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  await git(home, ['init', '--quiet'], false, true)
+  const received = Promise.withResolvers()
+  const closed = Promise.withResolvers()
+  const server = createServer(request => {
+    request.socket.once('close', closed.resolve)
+    received.resolve()
+  })
+  t.after(() => {
+    server.closeAllConnections()
+    server.close()
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const controller = new AbortController()
+  const pull = git(home, ['-c', 'http.proxy=', 'fetch', '--', 'http://127.0.0.1:' + server.address().port + '/repo', 'HEAD'],
+    false, true, controller.signal)
+  await Promise.race([received.promise, pull])
+  controller.abort()
+  await assert.rejects(pull, { name: 'AbortError' })
+  await closed.promise
+})
+
+test('MR pull reuses matching local objects and checks out long paths into an independent snapshot', { timeout: 30000 }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-local-pull-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const reference = { repositoryId: 2, localId: 5 }
+  const root = join(home, 'mr-reviews', digest('org', 2, 5))
+  const previous = join(root, 'patch-previous', 'checkout')
+  const relativeDirectory = join('long'.repeat(20), 'name'.repeat(20))
+  const relativeFile = join(relativeDirectory, 'source.txt')
+  await mkdir(join(previous, relativeDirectory), { recursive: true })
+  const run = (...args) => git(previous, ['-c', 'core.longpaths=true', '-c', 'user.name=Test',
+    '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', ...args], false, true)
+  await run('init', '--template=', '--quiet')
+  await run('commit', '--allow-empty', '-qm', 'target')
+  const target = await run('rev-parse', 'HEAD')
+  await writeFile(join(previous, relativeFile), 'long path')
+  await run('add', '--', relativeFile)
+  await run('commit', '-qm', 'source')
+  const source = await run('rev-parse', 'HEAD')
+  await run('update-ref', 'refs/dy-review/target', target)
+  await run('update-ref', 'refs/dy-review/source', source)
+
+  const reviewTarget = async () => ({ remote: 'file:///unavailable-mr-test',
+    source: { sha: source, ref: source, version: 1 }, target: { sha: target, ref: target } })
+  const reviews = createMrReviews(home, async () => ({ organization: 'org', codeup: { reviewTarget } }), () => [], {}, {})
+  await reviews.pull(reference)
+  await waitFor(async () => (await reviews.status(reference)).pull?.status !== 'running' &&
+    (await reviews.status(reference)).pull?.status !== 'saving', 15000)
+  const { pull, snapshot } = await reviews.status(reference)
+  assert.equal(pull, undefined, pull?.error)
+  assert.equal(snapshot.source, source)
+  assert.equal(snapshot.target, target)
+  assert.notEqual(snapshot.directory, previous)
+  assert.equal(await readFile(join(snapshot.directory, relativeFile), 'utf8'), 'long path')
+  await assert.rejects(readFile(join(snapshot.directory, '.git', 'objects', 'info', 'alternates')), { code: 'ENOENT' })
+})
+
+async function waitFor(check, timeout = 2000) {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    if (await check()) return
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  assert.fail('Snapshot task did not reach the expected state')
+}
+
+test('a cold MR pull deepens past a misleading merge base and leaves older history behind', { timeout: 30000 }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-shallow-review-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const remote = join(home, 'remote')
+  const checkout = join(home, 'checkout')
+  await mkdir(remote)
+  await mkdir(checkout)
+  const run = (dir, ...args) => git(dir, args, false, true)
+  await run(remote, 'init', '--quiet')
+  await run(checkout, 'init', '--quiet')
+
+  const commits = []
+  function commit(ref, mark, parent, path, merged) {
+    commits.push('commit refs/heads/' + ref, 'mark :' + mark,
+      'committer Test <test@example.invalid> ' + (1700000000 + mark) + ' +0000', 'data 1', 'x')
+    if (parent) commits.push('from :' + parent)
+    if (merged) commits.push('merge :' + merged)
+    commits.push('M 100644 inline ' + path, 'data 1', 'x', '')
+  }
+  for (let mark = 1; mark <= 16; mark++) commit('main', mark, mark - 1, 'old-' + mark)
+  commit('main', 17, 16, 'shared')
+  commit('source', 18, 17, 'source-a')
+  commit('source', 19, 18, 'source-b')
+  commit('source', 20, 19, 'source-c', 16)
+  commit('target', 21, 17, 'target-a')
+  commit('target', 22, 21, 'target-b')
+  commit('target', 23, 22, 'target-c', 16)
+  execFileSync('git', ['fast-import', '--quiet'], { cwd: remote, input: commits.join('\n') + '\n', windowsHide: true })
+
+  const source = await run(remote, 'rev-parse', 'refs/heads/source')
+  const target = await run(remote, 'rev-parse', 'refs/heads/target')
+  const base = await run(remote, 'merge-base', target, source)
+  const oldest = await run(remote, 'rev-list', '--max-parents=0', 'refs/heads/main')
+  const depths = []
+  const signal = new AbortController().signal
+  await fetchReviewHistory(checkout, target, source, async depth => {
+    depths.push(depth)
+    await run(checkout, '-c', 'protocol.file.allow=always', 'fetch', '--depth=' + depth, '--no-tags', '--', remote,
+      source + ':refs/dy-review/source', target + ':refs/dy-review/target')
+    if (depth === 2) {
+      const shallowBase = await run(checkout, 'merge-base', target, source)
+      assert.notEqual(shallowBase, base)
+    }
+  }, signal)
+  assert.deepEqual(depths, [2, 8])
+  assert.equal(await run(checkout, 'rev-parse', '--is-shallow-repository'), 'true')
+  await assert.rejects(run(checkout, 'cat-file', '-e', oldest))
+  assert.equal(await run(checkout, 'merge-base', target, source), base)
+  for (const args of [
+    ['diff', '--name-status', target + '...' + source],
+    ['log', '--format=%H', target + '..' + source],
+    ['merge-tree', '--write-tree', target, source],
+  ]) {
+    assert.equal(await run(checkout, ...args), await run(remote, ...args))
+  }
+})
 
 test('Codeup review keeps pinned supplement refs and does not fetch refs from another MR', async () => {
   const id = 2

@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { access, readdir, realpath } from 'node:fs/promises'
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
@@ -6,13 +6,62 @@ import type { createClient } from './yunxiao-client.mjs'
 
 type Api = ReturnType<typeof createClient>['codeup']
 const exec = promisify(execFile)
-export async function git(cwd: string, args: string[], optional = false, localOnly = false) {
+const gitOutputLimit = 16 << 20
+
+async function cancellableGit(args: string[], cwd: string, env: NodeJS.ProcessEnv, signal: AbortSignal) {
+  signal.throwIfAborted()
+  const windows = process.platform === 'win32'
+  const child = spawn('git', args, { cwd, env, windowsHide: true, detached: !windows, stdio: ['ignore', 'pipe', 'pipe'] })
+  let stopping: Promise<unknown> | undefined
+  function stop() {
+    if (stopping || !child.pid) return
+    const pid = child.pid
+    // Git can leave remote helpers downloading if only its launcher is killed.
+    if (windows) {
+      const taskkill = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
+      stopping = exec(taskkill, ['/pid', String(pid), '/t', '/f'], { windowsHide: true })
+        .catch(() => { if (child.exitCode === null) child.kill() })
+    } else {
+      stopping = Promise.resolve()
+      try { process.kill(-pid, 'SIGKILL') } catch { child.kill('SIGKILL') }
+    }
+  }
+  signal.addEventListener('abort', stop, { once: true })
   try {
-    return (await exec('git', args, { cwd, windowsHide: true, timeout: 90_000, maxBuffer: 16 << 20,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never',
-        ...(args[0] === 'switch' ? { LC_ALL: 'C' } : {}),
-        ...(localOnly ? { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' } : {}) } })).stdout.trimEnd()
+    return await new Promise<string>((resolve, reject) => {
+      const stdout: Buffer[] = []
+      const stderr: Buffer[] = []
+      let bytes = 0
+      function collect(chunks: Buffer[], data: Buffer) {
+        bytes += data.length
+        if (bytes <= gitOutputLimit) chunks.push(data)
+        else stop()
+      }
+      child.stdout.on('data', data => collect(stdout, data))
+      child.stderr.on('data', data => collect(stderr, data))
+      child.once('error', reject)
+      child.once('close', code => {
+        if (code === 0 && bytes <= gitOutputLimit) resolve(Buffer.concat(stdout).toString())
+        else reject(Object.assign(new Error('Git command failed'), { code, stderr: Buffer.concat(stderr).toString() }))
+      })
+    })
+  } finally {
+    signal.removeEventListener('abort', stop)
+    await stopping
+    signal.throwIfAborted()
+  }
+}
+
+export async function git(cwd: string, args: string[], optional = false, localOnly = false, signal?: AbortSignal) {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never',
+    ...(args[0] === 'switch' ? { LC_ALL: 'C' } : {}),
+    ...(localOnly ? { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' } : {}) }
+  try {
+    const output = signal ? await cancellableGit(args, cwd, env, signal) :
+      (await exec('git', args, { cwd, env, windowsHide: true, timeout: 90_000, maxBuffer: gitOutputLimit })).stdout
+    return output.trimEnd()
   } catch (error) {
+    signal?.throwIfAborted()
     const failure = error as { code?: number; stderr?: string }
     if (optional && failure.code === 1) return ''
     if (args[0] === 'switch' && /would be overwritten by checkout/i.test(failure.stderr ?? '')) {

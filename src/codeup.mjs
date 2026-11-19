@@ -82,13 +82,14 @@ export function codeupApi(call, organization) {
       }
       return requestRow(item, repositoryId)
     },
-    async reviewTarget(reference) {
+    /** @param {AbortSignal} [signal] */
+    async reviewTarget(reference, signal) {
       const mrPath = requestPath(reference)
       const { repositoryId, localId } = reference
       const repositoryPath = base + '/repositories/' + repositoryId
       const [repository, patches] = await Promise.all([
-        call(repositoryPath),
-        call(mrPath + '/diffs/patches'),
+        call(repositoryPath, signal),
+        call(mrPath + '/diffs/patches', signal),
       ])
       const remote = repository?.httpUrlToRepo
       if (Number(repository?.id) !== repositoryId || typeof remote !== 'string' ||
