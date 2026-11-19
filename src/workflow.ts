@@ -394,9 +394,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
         }
         try {
           const issue = await issueFor(api, { project, id })
-          if (label(issue.status) !== '待开发') {
-            await api.schedule(issue, project, plan.end)
-          }
+          await api.schedule(issue, project, plan.end)
           plan.members.push(id)
           try {
             await atomicJson(path, all)
@@ -414,5 +412,21 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     })
   }
 
-  return { start, bindingFor, preview, publish, transition, checkTransition, pendingTransition, plans, createPlan, addToPlan, updateDelivery }
+  async function removeFromPlan(cwd: string, project: string, planId: string, id: string) {
+    const api = await client()
+    const path = await planPath(cwd, project, api.organization)
+    return serial(path, async () => {
+      const all: Plan[] = await readJson(path) ?? []
+      const plan = all.find(item => item.id === planId)
+      if (!plan) throw new Error('当前工作区没有该交付计划')
+      if (!plan.members.includes(id)) return
+      const issue = await issueFor(api, { project, id })
+      await api.unschedule(issue, project)
+      plan.members = plan.members.filter(member => member !== id)
+      await atomicJson(path, all)
+    })
+  }
+
+  return { start, bindingFor, preview, publish, transition, checkTransition, pendingTransition, plans, createPlan,
+    addToPlan, removeFromPlan, updateDelivery }
 }

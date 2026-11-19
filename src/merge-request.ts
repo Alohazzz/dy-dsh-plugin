@@ -10,9 +10,14 @@ export async function git(cwd: string, args: string[], optional = false, localOn
   try {
     return (await exec('git', args, { cwd, windowsHide: true, timeout: 90_000, maxBuffer: 16 << 20,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never',
+        ...(args[0] === 'switch' ? { LC_ALL: 'C' } : {}),
         ...(localOnly ? { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' } : {}) } })).stdout.trimEnd()
   } catch (error) {
-    if (optional && (error as { code?: number }).code === 1) return ''
+    const failure = error as { code?: number; stderr?: string }
+    if (optional && failure.code === 1) return ''
+    if (args[0] === 'switch' && /would be overwritten by checkout/i.test(failure.stderr ?? '')) {
+      throw new Error('切换分支会覆盖主工作区的未提交改动或未跟踪文件，请先保存这些内容，或另建 worktree')
+    }
     let command = 0
     while (args[command] === '-c') command += 2
     throw new Error('Git ' + args[command] + ' 失败，请检查仓库、网络和 Git 访问权限')

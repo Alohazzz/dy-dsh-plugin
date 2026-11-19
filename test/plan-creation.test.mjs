@@ -28,7 +28,8 @@ test('创建计划选择正确的仓库和基础提交，处理冲突并保留�
   git(directory, 'remote', 'add', 'origin', remote)
   git(directory, 'push', 'origin', 'main', 'main:refs/heads/fix/remote')
   git(directory, 'switch', '-c', 'develop')
-  git(directory, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-m', 'other')
+  await writeFile(join(directory, 'source.txt'), 'develop')
+  git(directory, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-am', 'other')
   const options = { home: join(root, 'state'), client: () => ({ organization: 'org' }), host: {} }
   const workflow = createWorkflow(options)
   const input = { name: '术语 缓存', kind: 'fix', version: 'v2.20260901', branch: '', end: '2026-11-24',
@@ -52,7 +53,8 @@ test('创建计划选择正确的仓库和基础提交，处理冲突并保留�
   await assert.rejects(create({ name: '另一个计划', branch }), /本地已存在/)
 
   await writeFile(join(directory, 'source.txt'), 'uncommitted')
-  await assert.rejects(create({ name: '主检出受保护', branch: 'fix/dirty' }), /未提交改动/)
+  await assert.rejects(create({ name: '主检出受保护', branch: 'fix/dirty', baseBranch: 'develop' }), /未提交改动/)
+  assert.equal(git(directory, 'for-each-ref', 'refs/heads/fix/dirty'), '')
   const isolated = await create({ name: '远端计划', branch: 'fix/remote',
     useExistingRemote: true, worktreeDir: join(root, '独立代码') })
   assert.equal(git(directory, 'branch', '--show-current'), branch)
@@ -66,4 +68,32 @@ test('创建计划选择正确的仓库和基础提交，处理冲突并保留�
   }, worktree)
   assert.equal(preview.branch, isolated.branch)
   assert.deepEqual(await createWorkflow(options).plans(cwd, 'project'), [JSON.parse(JSON.stringify(plan)), isolated])
+})
+
+test('根仓库从当前分支切出计划时保留子模块已提交的检出和未跟踪文件', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-plan-gitlink-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const cwd = join(root, 'workspace')
+  const submodule = join(cwd, 'Module')
+  await mkdir(submodule, { recursive: true })
+  git(cwd, 'init', '--initial-branch=develop')
+  git(submodule, 'init', '--initial-branch=main')
+  const commit = (dir, name) => git(dir, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '--allow-empty', '-m', name)
+  commit(submodule, 'recorded')
+  git(cwd, 'update-index', '--add', '--cacheinfo', '160000,' + git(submodule, 'rev-parse', 'HEAD') + ',Module')
+  commit(cwd, 'record gitlink')
+  commit(submodule, 'local branch tip')
+  const tip = git(submodule, 'rev-parse', 'HEAD')
+  assert.equal(git(submodule, 'status', '--porcelain'), '')
+  await writeFile(join(cwd, 'local.txt'), 'local')
+  assert.match(git(cwd, 'status', '--porcelain=v2'), /\.M SC\.\./)
+
+  const workflow = createWorkflow({ home: join(root, 'state'), client: () => ({ organization: 'org' }), host: {} })
+  const plan = await workflow.createPlan(cwd, 'project', {
+    name: '测试计划', kind: 'feature', version: '', branch: 'feature/new-plan', end: '2026-11-24',
+    baseBranch: 'develop', targetBranch: '', useExistingRemote: false,
+  }, { key: '.', directory: cwd })
+  assert.equal(git(cwd, 'branch', '--show-current'), plan.branch)
+  assert.equal(git(submodule, 'rev-parse', 'HEAD'), tip)
+  assert.match(git(cwd, 'status', '--porcelain'), /\?\? local\.txt/)
 })

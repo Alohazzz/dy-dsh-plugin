@@ -519,6 +519,10 @@ export function apply(ctx: Context) {
       if (!Array.isArray(input.ids) || !input.ids.length || input.ids.length > 100) throw new Error('每批可选 1 到 100 条议题')
       return workflow.addToPlan(workspace(input.workspaceId).path, input.project, input.planId, input.ids)
     },
+    async removeFromPlan(input: PlanKey & { id: string }) {
+      await workflow.removeFromPlan(workspace(input.workspaceId).path, input.project, input.planId, input.id)
+      return { removed: true }
+    },
   }
 
   const noStore = { 'Cache-Control': 'no-store' }

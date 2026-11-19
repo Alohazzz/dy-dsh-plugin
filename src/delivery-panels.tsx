@@ -148,12 +148,46 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </Modal>
   }
 
-  function IssueTable({ issues }: { issues: PlanIssue[] }) {
-    return <Table headers={['议题编号', '标题', '负责人', '云效状态']}>
+  function IssueTable({ issues, remove }: { issues: PlanIssue[]; remove(issue: PlanIssue): void }) {
+    return <Table headers={['议题编号', '标题', '负责人', '云效状态', '操作']}>
       {issues.map(issue => <tr key={issue.id}><td>{issue.url ? <a href={issue.url} target="_blank" rel="noreferrer">{issue.reference}</a> : issue.reference}</td>
-        <td>{issue.error || issue.title || '—'}</td><td>{issue.owner || '—'}</td><td>{issue.state.name || '—'}</td></tr>)}
-      {!issues.length && <tr><td colSpan={4}>暂无计划议题</td></tr>}
+        <td>{issue.error || issue.title || '—'}</td><td>{issue.owner || '—'}</td><td>{issue.state.name || '—'}</td>
+        <td><button type="button" className="dy-delivery-link" aria-label={'移出计划 ' + issue.reference}
+          onClick={() => remove(issue)}>移出计划</button></td></tr>)}
+      {!issues.length && <tr><td colSpan={5}>暂无计划议题</td></tr>}
     </Table>
+  }
+
+  function RemoveIssue({ scope, issue, close, removed }: {
+    scope: PlanKey; issue: PlanIssue; close(): void; removed(): void
+  }) {
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState('')
+    async function submit(event: ReactType.FormEvent) {
+      event.preventDefault()
+      if (busy) return
+      setBusy(true)
+      setError('')
+      try {
+        await rpc('removeFromPlan', { ...scope, id: issue.id })
+        removed()
+      } catch (failure) {
+        setError(errorText(failure))
+        setBusy(false)
+      }
+    }
+    return <Modal label="移出计划" busy={busy} close={close}>
+      <h2>移出计划</h2>
+      <p>{issue.reference} {issue.title}</p>
+      <p>云效状态将回退至「已确认」，计划开始时间将清空。负责人和计划完成时间保留。</p>
+      <form onSubmit={submit}>
+        {error && <Problem error={error} />}
+        <div className="dy-yx-actions dy-delivery-footer">
+          <button type="button" disabled={busy} onClick={close}>取消</button>
+          <button className="dy-yx-primary" disabled={busy}>{busy ? '正在同步云效…' : '确认移出'}</button>
+        </div>
+      </form>
+    </Modal>
   }
 
   function PlanDetail({ scope, meta, revision, back, openMr, changed }: {
@@ -163,6 +197,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const [modal, setModal] = useState<'configure' | 'link' | 'create'>()
     const [busy, setBusy] = useState(false)
     const [notice, setNotice] = useState('')
+    const [removing, setRemoving] = useState<PlanIssue>()
     const detail = result.value
     function done(ref?: MrRef) {
       setNotice(ref ? (modal === 'link' ? '已关联 MR !' : '已关联计划与 MR !') + ref.localId : '已保存交付分支')
@@ -200,7 +235,12 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           <div><dt>关联 MR</dt><dd>{detail.plan.delivery?.mr ? '!' + detail.plan.delivery.mr.localId : '—'}</dd></div>
         </dl>{detail.mrError && <Problem error={detail.mrError} retry={result.retry} />}
       </section><section className="dy-delivery-card" aria-label="计划议题"><h3 className="dy-delivery-section">计划议题</h3>
-        <IssueTable issues={detail.issues} /></section>
+        <IssueTable issues={detail.issues} remove={setRemoving} /></section>
+      {removing && <RemoveIssue scope={scope} issue={removing} close={() => setRemoving(undefined)} removed={() => {
+        setNotice('已移出计划 · ' + removing.reference)
+        setRemoving(undefined)
+        changed()
+      }} />}
       {modal === 'configure' && <Configure scope={scope} plan={detail.plan} close={() => setModal(undefined)} saved={done} />}
       {modal === 'link' && <LinkRequest scope={scope} detail={detail} close={refreshOnClose} saved={done} />}
       {modal === 'create' && detail.plan.delivery && <Modal label="发起合并请求" drawer busy={busy} close={refreshOnClose}>

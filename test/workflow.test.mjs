@@ -137,22 +137,30 @@ test('批量排期保留已成功项，重试只处理失败议题', async t => 
   assert.deepEqual(attempts, ['one','two','one'])
 })
 
-for (const scenario of ['无需完成时间', '完成时间必填且为空', '保留已有完成时间']) {
+for (const scenario of ['无需完成时间', '完成时间必填且为空', '保留已有完成时间', '待开发补齐空值', '保留待开发已有排期及负责人']) {
   test('议题加入计划前写入排期字段并回查状态 · ' + scenario, async t => {
     const cwd = await mkdtemp(join(tmpdir(), 'dy-yunxiao-workflow-'))
     t.after(() => rm(cwd, { recursive: true, force: true }))
     t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-19T14:00:00+08:00') })
-    const requiresEnd = scenario !== '无需完成时间'
-    const existingEnd = scenario === '保留已有完成时间' ? '2026-11-23 00:00:00' : ''
+    const requiresEnd = scenario.startsWith('完成时间') || scenario === '保留已有完成时间'
+    const keepReady = scenario === '保留待开发已有排期及负责人'
+    const alreadyReady = keepReady || scenario === '待开发补齐空值'
+    const existingEnd = scenario === '保留已有完成时间' || keepReady ? '2026-11-23 00:00:00' : ''
+    const ready = { id: 'ready', name: '待开发' }
+    const confirmed = { id: 'confirmed', name: '已确认' }
+    const startValue = { value: keepReady ? '2026-11-18 00:00:00' : '' }
     const endValue = { value: existingEnd }
     const state = {
       id: 'issue', spaceId: 'project', workitemTypeId: 'bug',
-      status: { id: 'confirmed', name: '已确认' },
-      customFieldValues: [{ fieldId: 'planEnd', fieldName: '计划完成时间', values: [endValue] }],
+      status: alreadyReady ? ready : confirmed, assignedTo: keepReady ? { id: 'existing-owner' } : null,
+      customFieldValues: [
+        { fieldId: 'planStart', fieldName: '计划开始时间', values: [startValue] },
+        { fieldId: 'planEnd', fieldName: '计划完成时间', values: [endValue] },
+      ],
     }
-    const ready = { id: 'ready', name: '待开发' }
     const writes = []
     let verified = false
+    let failClear = true
     const api = createClient({
       organization: 'org', token: 'mock-token',
       fetcher: async (url, { method, body }) => {
@@ -164,7 +172,9 @@ for (const scenario of ['无需完成时间', '完成时间必填且为空', '�
             { id: 'planEnd', name: '计划完成时间' },
           ])
         }
-        if (path.endsWith('/workitems/issue/workflow')) return Response.json({ statuses: [ready] })
+        if (path.endsWith('/workitems/issue/workflow')) {
+          return Response.json({ statuses: [state.status === ready ? confirmed : ready] })
+        }
         assert.ok(path.endsWith('/workitems/issue'))
         if (method === 'GET') {
           verified ||= state.status === ready
@@ -172,15 +182,22 @@ for (const scenario of ['无需完成时间', '完成时间必填且为空', '�
         }
         assert.equal(method, 'PUT')
         const update = JSON.parse(body)
-        if (update.status && (writes[0]?.planStart !== '2026-11-19 00:00:00' || writes[1]?.assignedTo !== 'user')) {
+        if (update.status === ready.id && (startValue.value !== '2026-11-19 00:00:00' || state.assignedTo?.id !== 'user')) {
           return new Response(null, { status: 400 })
         }
         writes.push(update)
-        if (update.status && requiresEnd && !endValue.value) {
+        if (update.status === ready.id && requiresEnd && !endValue.value) {
           return Response.json({ errorMessage: '计划完成时间必填' }, { status: 400 })
         }
+        if (update.planStart === '' && failClear) {
+          failClear = false
+          return new Response(null, { status: 503 })
+        }
+        if ('planStart' in update) startValue.value = update.planStart
         if (update.planEnd) endValue.value = update.planEnd
+        if (update.assignedTo) state.assignedTo = { id: update.assignedTo }
         if (update.status === ready.id) state.status = ready
+        if (update.status === confirmed.id) state.status = confirmed
         return new Response(null, { status: 204 })
       },
     })
@@ -188,12 +205,23 @@ for (const scenario of ['无需完成时间', '完成时间必填且为空', '�
     const plan = await workflow.createPlan(cwd, 'project', { name: '测试', branch: 'feature/test', end: '2026-11-20' })
     const [result] = await workflow.addToPlan(cwd, 'project', plan.id, ['issue'])
     assert.equal(result.result, '成功', result.error)
-    assert.deepEqual(writes, [
-      { planStart: '2026-11-19 00:00:00' }, { assignedTo: 'user' }, { status: 'ready' },
+    assert.deepEqual(writes, keepReady ? [] : [
+      { planStart: '2026-11-19 00:00:00' }, { assignedTo: 'user' }, ...(alreadyReady ? [] : [{ status: 'ready' }]),
       ...(requiresEnd && !existingEnd ? [{ planEnd: '2026-11-20 00:00:00' }, { status: 'ready' }] : []),
     ])
     assert.equal(verified, true)
     assert.deepEqual((await workflow.plans(cwd, 'project'))[0].members, ['issue'])
+    const savedEnd = endValue.value
+    writes.length = 0
+    await assert.rejects(workflow.removeFromPlan(cwd, 'project', plan.id, 'issue'), /清空计划开始时间失败/)
+    assert.deepEqual((await workflow.plans(cwd, 'project'))[0].members, ['issue'])
+    await workflow.removeFromPlan(cwd, 'project', plan.id, 'issue')
+    await workflow.removeFromPlan(cwd, 'project', plan.id, 'issue')
+    assert.deepEqual(writes, [{ status: 'confirmed' }, { planStart: '' }, { planStart: '' }])
+    assert.deepEqual((await workflow.plans(cwd, 'project'))[0].members, [])
+    assert.equal(startValue.value, '')
+    assert.equal(endValue.value, savedEnd)
+    assert.equal(state.assignedTo.id, keepReady ? 'existing-owner' : 'user')
   })
 }
 

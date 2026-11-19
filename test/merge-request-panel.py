@@ -8,6 +8,7 @@ def check(page):
     submissions = []
     creations = []
     detail_reads = []
+    removals = []
     binding = dict(key='Nto.His/Term', repositoryId=2, path='org/Term', target='release')
     plans = {
         'legacy': dict(id='legacy', name='结算导出计划', branch='root-fix', end='2026-11-24', members=['issue1']),
@@ -67,6 +68,13 @@ def check(page):
             issues = [dict(id='issue1', reference='HSP-2086', title='结算导出时保留筛选条件',
                            owner='苏一', state=dict(id='doing', name='开发中'), url='')] if plan['members'] else []
             value = dict(plan=plan, candidates=candidates, issues=issues, mrStatus=plan_row(plan)['mrStatus'])
+        elif method == 'removeFromPlan':
+            assert args == dict(project='project', workspaceId='w', planId='legacy', id='issue1')
+            removals.append(args)
+            if len(removals) == 1:
+                return route.fulfill(status=400, json=dict(error='云效暂时不可用'))
+            plans['legacy']['members'].remove(args['id'])
+            value = dict(removed=True)
         elif method == 'planDeliveryOptions':
             value = (dict(repository=dict(path='org/Term', id=2, defaultBranch='release'), targets=['release'])
                      if args['planId'] == 'created' else
@@ -112,6 +120,23 @@ def check(page):
     page.get_by_role('button', name='查看 MR !5').click()
     expect(page.get_by_role('heading', name='!5 结算导出修正')).to_be_visible()
     page.get_by_role('button', name='返回计划', exact=True).click()
+    page.set_viewport_size(dict(width=420, height=680))
+    page.emulate_media(color_scheme='dark')
+    remove = page.get_by_role('button', name='移出计划 HSP-2086')
+    remove.click()
+    confirmation = page.get_by_role('dialog', name='移出计划', exact=True)
+    expect(confirmation).to_contain_text('清空')
+    confirmation.get_by_role('button', name='取消', exact=True).click()
+    assert not removals
+    remove.click()
+    confirm = confirmation.get_by_role('button', name='确认移出')
+    expect(confirm).to_be_in_viewport()
+    confirm.click()
+    expect(confirmation.get_by_role('alert')).to_contain_text('云效暂时不可用')
+    confirm.click()
+    expect(page.get_by_text('暂无计划议题', exact=True)).to_be_visible()
+    assert len(removals) == 2
+    page.set_viewport_size(dict(width=1000, height=760))
     page.get_by_role('button', name='返回交付计划', exact=True).click()
     expect(page.get_by_role('searchbox', name='搜索交付计划')).to_have_value('结算')
     page.get_by_role('searchbox', name='搜索交付计划').fill('')
@@ -192,4 +217,4 @@ def check(page):
     expect(plan_dialog.get_by_label('目标仓库')).to_have_value('.')
     expect(plan_dialog.get_by_label('基础分支')).to_have_value('root-fix')
     plan_dialog.get_by_role('button', name='取消').click()
-    print('PASS | plan creation, legacy binding, scoped MR creation, existing MR association, shared detail and standalone MR')
+    print('PASS | plan creation, issue removal and retry, legacy binding, scoped MR creation, existing MR association, shared detail and standalone MR')

@@ -50,9 +50,6 @@ export async function createPlanCheckout(cwd: string, plan: PlanCreate, id: stri
   if (worktreeDir && !isAbsolute(worktreeDir)) throw new Error('代码目录必须是绝对路径')
   const head = worktree ? '' : await git(cwd, ['rev-parse', '--verify', 'HEAD'])
   const previous = worktree ? '' : await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], true)
-  if (!worktree && await git(cwd, ['status', '--porcelain'])) {
-    throw new Error('主工作区存在未提交改动，请先提交或使用 git stash，或另建 worktree')
-  }
 
   let start = 'refs/heads/' + baseBranch
   if (useExistingRemote) {

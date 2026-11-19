@@ -190,8 +190,8 @@ window.__ModuleLoader__.load({
         stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d={actionPaths[name]} /></svg>
     }
 
-    function Panel({ ctx, plansChanged, openPlan }: {
-      ctx: { uiWorkspace: Navigation }; plansChanged(): void; openPlan(plan: PlanKey): void
+    function Panel({ ctx, plansRevision, plansChanged, openPlan }: {
+      ctx: { uiWorkspace: Navigation }; plansRevision: number; plansChanged(): void; openPlan(plan: PlanKey): void
     }) {
       const [meta, setMeta] = useState<Meta>()
       const [metaError, setMetaError] = useState('')
@@ -284,7 +284,7 @@ window.__ModuleLoader__.load({
           abort.abort()
           listGeneration.current++
         }
-      }, [project, workspaceId, category, mine, query, status, version, from, to, opts, revision])
+      }, [project, workspaceId, category, mine, query, status, version, from, to, opts, revision, plansRevision])
 
       useEffect(() => {
         setDetail(undefined)
@@ -295,7 +295,7 @@ window.__ModuleLoader__.load({
           if (!abort.signal.aborted) setDetailError(errorText(failure))
         })
         return () => abort.abort()
-      }, [active, workspaceId, revision])
+      }, [active, workspaceId, revision, plansRevision])
 
       function reset() {
         updateSelection(emptyConditions)
@@ -737,7 +737,7 @@ window.__ModuleLoader__.load({
                 <select value={planId} disabled={Boolean(results)} onChange={event => setPlan(event.target.value)}>
                   {plans?.map(item => <option key={item.id} value={item.id}>{item.name} · {item.end}</option>)}
                 </select></label>}
-              <p>待开发议题只补计划归属。其余议题将设为待开发，负责人设为当前用户，计划开始日设为当天。云效要求填写计划完成时间且议题未填时，使用所选计划的完成日期。</p>
+              <p>待开发议题保留已有负责人和开始日期，并补齐空值。其余议题将设为待开发，负责人设为当前用户，计划开始日设为当天。云效要求填写计划完成时间且议题未填时，使用所选计划的完成日期。</p>
               {results && <ul>{results.map(row => <li key={row.id}>
                 {issues.find(item => item.id === row.id)?.reference} · {row.result}{row.error && ' · ' + row.error}
               </li>)}</ul>}
@@ -826,7 +826,8 @@ window.__ModuleLoader__.load({
               onClick={() => { if (next !== module) { setMr(undefined); open(next) } }}>{modules[next]}</button>)}
           </nav>
         </div>
-        <div className="dy-wb-content" hidden={module !== 'issues'}>{visited.issues && <Panel {...props} plansChanged={changed} openPlan={openPlan} />}</div>
+        <div className="dy-wb-content" hidden={module !== 'issues'}>{visited.issues && <Panel {...props}
+          plansRevision={revision} plansChanged={changed} openPlan={openPlan} />}</div>
         <div className="dy-wb-content" hidden={module !== 'plans'}>{visited.plans && <Plans selected={plan} revision={revision}
           openPlan={openPlan} openMr={ref => openMr(ref, 'plan')} changed={changed}
           renderCreate={(scope, meta, close, saved) => <CreatePlanDialog

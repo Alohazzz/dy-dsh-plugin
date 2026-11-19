@@ -14,6 +14,23 @@ function list(value, field) {
   return items
 }
 
+const shanghaiDay = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+})
+const statusName = status => status?.displayName || status?.name
+const assignee = issue => typeof issue.assignedTo === 'string' ? issue.assignedTo : issue.assignedTo?.id
+
+function planDate(issue, field, nativeValue) {
+  const values = issue.customFieldValues?.find(item => item.fieldId === field?.id)?.values
+  return nativeValue || values?.map(item => item?.value || item?.displayValue).find(Boolean)
+}
+
+function planDay(value) {
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}(?: |$)/.test(value)) return value.slice(0, 10)
+  const date = new Date(typeof value === 'string' && /^\d{13}$/.test(value) ? Number(value) : value)
+  return Number.isNaN(date.getTime()) ? '' : shanghaiDay.format(date)
+}
+
 export class YunxiaoHttpError extends Error {
   constructor(status, message = `云效请求失败（HTTP ${status}）`, detail) {
     super(message)
@@ -83,6 +100,32 @@ export function createClient({
     return list(await call(projectPath(space) + '/versions'), 'versions')
   }
 
+  async function planFields(issue, space) {
+    const fields = list(await call(typePath(space, typeOf(issue)) + '/fields'), 'fields')
+    const start = fields.find(field => field.name === '计划开始时间')
+    const end = fields.find(field => field.name === '计划完成时间')
+    if (!start?.id) throw new YunxiaoHttpError(422, '议题类型未配置「计划开始时间」字段')
+    return { start, end }
+  }
+
+  async function planStatus(issue, name) {
+    if (statusName(issue.status) === name && issue.status?.id) return issue.status.id
+    const statuses = list(await request(itemPath(issue.id) + '/workflow'), 'statuses')
+    const target = statuses.find(status => statusName(status) === name)
+    if (!target?.id) throw new YunxiaoHttpError(422, '当前状态无法流转到「' + name + '」')
+    return target.id
+  }
+
+  async function writePlanField(issue, step, body) {
+    try {
+      await request(itemPath(issue.id), undefined, 'PUT', body)
+    } catch (error) {
+      if (!(error instanceof YunxiaoHttpError)) throw error
+      const detail = error.detail ? '，' + error.detail : ''
+      throw new YunxiaoHttpError(error.status, `${step}失败（HTTP ${error.status}）${detail}`, error.detail)
+    }
+  }
+
   return {
     organization,
     project,
@@ -120,44 +163,56 @@ export function createClient({
       }
     },
     async schedule(issue, space, planEnd) {
-      const type = typeOf(issue)
-      const [user, fields, statuses] = await Promise.all([
-        currentUser(), call(typePath(space, type) + '/fields'),
-        request(itemPath(issue.id) + '/workflow'),
+      const ready = statusName(issue.status) === '待开发'
+      const [fields, target, owner] = await Promise.all([
+        planFields(issue, space), planStatus(issue, '待开发'),
+        ready && assignee(issue) ? assignee(issue) : currentUser().then(user => user.id),
       ])
-      const configs = list(fields, 'fields')
-      const start = configs.find(field => field.name === '计划开始时间')
-      const target = list(statuses, 'statuses').find(status => (status.displayName || status.name) === '待开发')
-      if (!start?.id || !target?.id) throw new YunxiaoHttpError(422, '缺少计划开始时间字段或无可用的待开发流转')
-      const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
-      async function write(step, body) {
+      const { start, end } = fields
+      const today = shanghaiDay.format(new Date())
+      const existingStart = planDate(issue, start, issue.planStartDate)
+      const setStart = !ready || !existingStart
+      // 云效流转到「待开发」时会校验已保存的排期字段。
+      if (setStart && planDay(existingStart) !== today) {
+        await writePlanField(issue, '写入计划开始时间', { [start.id]: today + ' 00:00:00' })
+      }
+      if (assignee(issue) !== owner) await writePlanField(issue, '更新负责人', { assignedTo: owner })
+      let filledEnd = false
+      if (issue.status?.id !== target) {
+        const transition = () => writePlanField(issue, '流转到待开发', { status: target })
         try {
-          await request(itemPath(issue.id), undefined, 'PUT', body)
+          await transition()
         } catch (error) {
-          if (!(error instanceof YunxiaoHttpError)) throw error
-          const required = error.detail === '计划完成时间必填' ? '。云效要求填写计划完成时间' : ''
-          throw new YunxiaoHttpError(error.status, `${step}失败（HTTP ${error.status}）${required}`, error.detail)
+          if (!(error instanceof YunxiaoHttpError) || error.status !== 400 || error.detail !== '计划完成时间必填') throw error
+          if (!end?.id || !/^\d{4}-\d{2}-\d{2}$/.test(planEnd)) throw error
+          if (planEnd < today) throw new YunxiaoHttpError(422, '云效要求填写计划完成时间，所选计划的完成日期早于今天')
+          const latest = await get(issue.id)
+          if (latest.status?.id !== target) {
+            if (planDate(latest, end, latest.planEndDate)) throw error
+            await writePlanField(issue, '写入计划完成时间', { [end.id]: planEnd + ' 00:00:00' })
+            filledEnd = true
+            await transition()
+          }
         }
       }
-      // 云效流转到「待开发」时会校验已保存的排期字段。
-      await write('写入计划开始时间', { [start.id]: today + ' 00:00:00' })
-      await write('更新负责人', { assignedTo: user.id })
-      const transition = () => write('流转到待开发', { status: target.id })
-      try {
-        await transition()
-      } catch (error) {
-        if (!(error instanceof YunxiaoHttpError) || error.status !== 400 || error.detail !== '计划完成时间必填') throw error
-        const end = configs.find(field => field.name === '计划完成时间')
-        if (!end?.id || !/^\d{4}-\d{2}-\d{2}$/.test(planEnd)) throw error
-        if (planEnd < today) throw new YunxiaoHttpError(422, '云效要求填写计划完成时间，所选计划的完成日期早于今天')
-        const latest = await get(issue.id)
-        if (latest.status?.id === target.id) return
-        const existingEnd = latest.customFieldValues?.find(field => field.fieldId === end.id)
-        if (latest.planEndDate || existingEnd?.values?.some(value => value?.value || value?.displayValue)) throw error
-        await write('写入计划完成时间', { [end.id]: planEnd + ' 00:00:00' })
-        await transition()
+      const latest = await get(issue.id)
+      const actualStart = planDate(latest, start, latest.planStartDate)
+      if (latest.status?.id !== target || assignee(latest) !== owner ||
+          !actualStart || (setStart && planDay(actualStart) !== today) ||
+          (filledEnd && planDay(planDate(latest, end, latest.planEndDate)) !== planEnd)) {
+        throw new Error('尚未核实云效待开发状态、排期或负责人，请重试')
       }
-      if ((await get(issue.id)).status?.id !== target.id) throw new Error('尚未核实待开发状态，请重试')
+    },
+    async unschedule(issue, space) {
+      const [{ start }, target] = await Promise.all([planFields(issue, space), planStatus(issue, '已确认')])
+      if (issue.status?.id !== target) await writePlanField(issue, '流转到已确认', { status: target })
+      if (planDate(issue, start, issue.planStartDate)) {
+        await writePlanField(issue, '清空计划开始时间', { [start.id]: '' })
+      }
+      const latest = await get(issue.id)
+      if (latest.status?.id !== target || planDate(latest, start, latest.planStartDate)) {
+        throw new Error('尚未核实云效已确认状态或计划开始时间已清空，请重试')
+      }
     },
     get,
     async find(reference, signal) {
