@@ -1,5 +1,9 @@
 export function codeupApi(call, organization) {
   const base = '/oapi/v1/codeup/organizations/' + organization
+  function requestPath({ repositoryId, localId }) {
+    if (![repositoryId, localId].every(id => Number.isSafeInteger(id) && id > 0)) throw new Error('无效的合并请求编号')
+    return base + '/repositories/' + repositoryId + '/changeRequests/' + localId
+  }
   function pathOf(remote) {
     const match = /^(?:https:\/\/codeup\.aliyun\.com\/|git@codeup\.aliyun\.com:|ssh:\/\/git@codeup\.aliyun\.com\/)([^?#\s]+)$/.exec(remote)
     const path = match?.[1].replace(/\.git$/, '')
@@ -69,21 +73,22 @@ export function codeupApi(call, organization) {
       return { rows: reviewerId ? rows.filter(row => row.status === 'UNDER_REVIEW' &&
         row.reviewers.some(user => user.id === reviewerId && !user.reviewed)) : rows, more: items.length === 20 }
     },
-    async detail({ repositoryId, localId }) {
-      if (![repositoryId, localId].every(id => Number.isSafeInteger(id) && id > 0)) throw new Error('无效的合并请求编号')
-      const raw = await call(base + '/repositories/' + repositoryId + '/changeRequests/' + localId)
+    async detail(reference) {
+      const { repositoryId, localId } = reference
+      const raw = await call(requestPath(reference))
       const item = raw?.result ?? raw
       if (Number(item?.localId) !== localId || (item?.projectId != null && Number(item.projectId) !== repositoryId)) {
         throw new Error('Codeup 返回的合并请求与请求不符')
       }
       return requestRow(item, repositoryId)
     },
-    async reviewTarget({ repositoryId, localId }) {
-      if (![repositoryId, localId].every(id => Number.isSafeInteger(id) && id > 0)) throw new Error('无效的合并请求编号')
+    async reviewTarget(reference) {
+      const mrPath = requestPath(reference)
+      const { repositoryId, localId } = reference
       const repositoryPath = base + '/repositories/' + repositoryId
       const [repository, patches] = await Promise.all([
         call(repositoryPath),
-        call(repositoryPath + '/changeRequests/' + localId + '/diffs/patches'),
+        call(mrPath + '/diffs/patches'),
       ])
       const remote = repository?.httpUrlToRepo
       if (Number(repository?.id) !== repositoryId || typeof remote !== 'string' ||
@@ -99,9 +104,26 @@ export function codeupApi(call, organization) {
         if (!patch || !/^[a-f0-9]{40}$/.test(patch.commitId)) throw new Error('Codeup 补丁集缺少有效的固定提交')
         const ref = typeof patch.ref === 'string' && /^refs\/changes\/[0-9]+\/(?:target\/)?[0-9]+$/.test(patch.ref)
           && patch.ref.split('/')[2] === String(localId) ? patch.ref : patch.commitId
-        return { sha: patch.commitId, ref, version: patch.versionNo }
+        return {
+          sha: patch.commitId, ref, version: patch.versionNo,
+          patchSetId: typeof patch.patchSetBizId === 'string' ? patch.patchSetBizId : '',
+        }
       }
       return { remote, source: latest('MERGE_SOURCE'), target: latest('MERGE_TARGET') }
+    },
+    async findReviewComment(reference, marker) {
+      const rows = await call(requestPath(reference) + '/comments/list', undefined, 'POST', { comment_type: 'GLOBAL_COMMENT' })
+      if (!Array.isArray(rows)) throw new Error('无法读取 Codeup 评论列表')
+      const found = rows.find(row => row?.state === 'OPENED' && !row.is_deleted &&
+        typeof row.comment_biz_id === 'string' && typeof row.content === 'string' && row.content.includes(marker))
+      return found?.comment_biz_id
+    },
+    async publishReviewComment(reference, patchSetId, content) {
+      const item = await call(requestPath(reference) + '/comments', undefined, 'POST', {
+        comment_type: 'GLOBAL_COMMENT', content, draft: false, patchset_biz_id: patchSetId, resolved: false,
+      })
+      if (typeof item?.comment_biz_id !== 'string' || !item.comment_biz_id) throw new Error('Codeup 未返回评论编号')
+      return item.comment_biz_id
     },
     async create(id, source, target, title, description) {
       return receipt(await call(base + '/repositories/' + id + '/changeRequests', undefined, 'POST', {

@@ -7,6 +7,9 @@ import { join } from 'node:path'
 import { deliveryOptions, mrRepos, mrPreview, submitMr } from '../src/merge-request.ts'
 import { codeupApi } from '../src/codeup.mjs'
 import { apply } from '../src/host.ts'
+import { createMrReviews } from '../src/mr-review.ts'
+import { digest } from '../src/yunxiao.mjs'
+import { createWorkflow } from '../src/workflow.ts'
 
 test('Codeup review keeps pinned supplement refs and does not fetch refs from another MR', async () => {
   const id = 2
@@ -21,19 +24,77 @@ test('Codeup review keeps pinned supplement refs and does not fetch refs from an
     }
     return [
       { relatedMergeItemType: 'MERGE_SOURCE', versionNo: 1, commitId: target, ref: 'refs/changes/5/1' },
-      { relatedMergeItemType: 'MERGE_SOURCE', versionNo: 2, commitId: source, ref: 'refs/changes/9/2' },
+      { relatedMergeItemType: 'MERGE_SOURCE', versionNo: 2, commitId: source, ref: 'refs/changes/9/2', patchSetBizId: 'source-patch' },
       { relatedMergeItemType: 'MERGE_TARGET', versionNo: 1, commitId: target, ref: 'refs/changes/5/target/1' },
     ]
   }, 'org')
   assert.deepEqual(await api.reviewTarget({ repositoryId: id, localId: 5 }), {
-    remote, source: { sha: source, ref: source, version: 2 }, target: { sha: target, ref: 'refs/changes/5/target/1', version: 1 },
+    remote, source: { sha: source, ref: source, version: 2, patchSetId: 'source-patch' },
+    target: { sha: target, ref: 'refs/changes/5/target/1', version: 1, patchSetId: '' },
   })
   assert.deepEqual(calls, [
     ['/oapi/v1/codeup/organizations/org/repositories/2', undefined],
     ['/oapi/v1/codeup/organizations/org/repositories/2/changeRequests/5/diffs/patches', undefined],
   ])
 })
-import { createWorkflow } from '../src/workflow.ts'
+
+test('review comment checks the report and patch, then recovers a lost reply without another post', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'dsh-review-comment-'))
+  t.after(() => rm(home, { recursive: true, force: true }))
+  const reference = { repositoryId: 2, localId: 5 }
+  const root = join(home, 'mr-reviews', digest('org', 2, 5))
+  const checkout = join(root, 'patch', 'checkout')
+  await mkdir(checkout, { recursive: true })
+  const source = 'a'.repeat(40)
+  const target = 'b'.repeat(40)
+  await writeFile(join(root, 'snapshot.json'), JSON.stringify({
+    id: digest(source, target, 1), source, target, version: 1, directory: checkout,
+  }))
+  await writeFile(join(root, 'patch', 'review.json'), JSON.stringify({
+    sessionId: 'review-1', startedAt: 1, markdown: '已保存的报告', status: 'complete',
+  }))
+  let version = 2
+  let posts = 0
+  let posted
+  let visible = false
+  const api = codeupApi(async (url, _signal, method, body) => {
+    if (url.endsWith('/repositories/2')) return {
+      id: 2, pathWithNamespace: 'org/review', httpUrlToRepo: 'https://codeup.aliyun.com/org/review.git',
+    }
+    if (url.endsWith('/diffs/patches')) return [
+      { relatedMergeItemType: 'MERGE_SOURCE', versionNo: version, commitId: source, patchSetBizId: 'source-patch' },
+      { relatedMergeItemType: 'MERGE_TARGET', versionNo: 1, commitId: target },
+    ]
+    assert.equal(method, 'POST')
+    if (url.endsWith('/comments/list')) {
+      assert.deepEqual(body, { comment_type: 'GLOBAL_COMMENT' })
+      return visible ? [{ state: 'OPENED', comment_biz_id: 'comment-1', content: posted.content }] : []
+    }
+    assert.match(url, /repositories\/2\/changeRequests\/5\/comments$/)
+    posts++
+    posted = body
+    throw new Error('response lost')
+  }, 'org')
+  const load = () => createMrReviews(home, async () => ({ organization: 'org', codeup: api }), () => [], {}, {})
+  const review = load()
+  const { token, footer } = (await review.status(reference)).comment
+  const input = { ...reference, token, markdown: '  用户确认的改动  ' }
+  await assert.rejects(review.publish({ ...input, token: 'expired' }), /报告已变化/)
+  await assert.rejects(review.publish(input), /补丁集已变化/)
+  assert.equal(posts, 0)
+  version = 1
+  await assert.rejects(review.publish(input), /尚未返回/)
+  assert.deepEqual(posted, {
+    comment_type: 'GLOBAL_COMMENT', content: '用户确认的改动\n\n' + footer,
+    draft: false, patchset_biz_id: 'source-patch', resolved: false,
+  })
+  const restarted = load()
+  assert.equal((await restarted.status(reference)).comment.pending, true)
+  visible = true
+  assert.deepEqual(await restarted.publish({ ...reference, token }), { id: 'comment-1' })
+  assert.deepEqual(await restarted.publish(input), { id: 'comment-1' })
+  assert.equal(posts, 1)
+})
 
 test('Codeup resolves full paths, matches same-repository open MRs and creates with numeric IDs', async () => {
   const calls = []

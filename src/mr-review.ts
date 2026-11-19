@@ -1,16 +1,19 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { MrRef, MrReviewView, MrSnapshot } from './contracts.ts'
+import { mrReviewCommentLimit, type MrRef, type MrReviewComment, type MrReviewView, type MrSnapshot } from './contracts.ts'
 import { git } from './merge-request.ts'
 import { atomicJson, digest, readJson } from './yunxiao.mjs'
 import type { createSkillInstallations } from './skill-installations.ts'
 import type { SkillSource } from './skill-catalog.ts'
-import type { createClient } from './yunxiao-client.mjs'
+import { YunxiaoHttpError, type createClient } from './yunxiao-client.mjs'
 
 type Client = ReturnType<typeof createClient>
 type Installations = ReturnType<typeof createSkillInstallations>
-type Review = NonNullable<MrReviewView['review']> & { sessionId: string; startedAt: number; installation?: string }
+type Review = NonNullable<MrReviewView['review']> & {
+  sessionId: string; startedAt: number; installation?: string
+  publication?: { id?: string }
+}
 type History = { reason: 'idle' | 'input-required' | 'timeout'; output: {
   records: { event: { data: { message?: { content?: { type: string; text?: string }[] } } } }[]
 } }
@@ -80,6 +83,53 @@ export function createMrReviews(home: string, client: () => Promise<Client>, sou
     const review: Review | undefined = snapshot ? await readJson(reviewFile(snapshot)) ?? undefined : undefined
     return { snapshot, review }
   }
+  function commentOf(snapshot: MrSnapshot, review: Review): MrReviewComment | undefined {
+    if (review.status !== 'complete' || !review.markdown) return
+    const token = digest(snapshot.id, review.sessionId, review.markdown)
+    return {
+      token, footer: '审查报告编号 · ' + token.slice(0, 20),
+      pending: Boolean(review.publication && !review.publication.id), id: review.publication?.id,
+    }
+  }
+
+  function publish(input: MrRef & { token: string; markdown?: string }) {
+    return withMr(input, async (root, api) => {
+      const { snapshot, review } = await current(root)
+      const draft = snapshot && review && commentOf(snapshot, review)
+      if (!snapshot || !review || !draft || input.token !== draft.token) {
+        throw new Error('审查报告已变化，请重新预览确认')
+      }
+      if (draft.id) return { id: draft.id }
+      const file = reviewFile(snapshot)
+      if (!draft.pending) {
+        const markdown = typeof input.markdown === 'string' ? input.markdown.trim() : ''
+        const content = markdown + '\n\n' + draft.footer
+        if (!markdown || content.length > mrReviewCommentLimit) throw new Error('请填写有效的评论内容并检查长度')
+        const { source, target } = await api.codeup.reviewTarget(input)
+        if (snapshot.id !== digest(source.sha, target.sha, source.version)) {
+          throw new Error('Codeup 补丁集已变化，请刷新本地快照并重新审查')
+        }
+        if (!source.patchSetId) throw new Error('Codeup 未返回源补丁集编号')
+        // Save the attempt before sending. An ambiguous result can only be checked, never resent.
+        review.publication = {}
+        await atomicJson(file, review)
+        try {
+          await api.codeup.publishReviewComment(input, source.patchSetId, content)
+        } catch (error) {
+          if (error instanceof YunxiaoHttpError && [400, 401, 403, 404, 422, 429].includes(error.status)) {
+            delete review.publication
+            await atomicJson(file, review)
+            throw error
+          }
+        }
+      }
+      const id = await api.codeup.findReviewComment(input, draft.footer)
+      if (!id) throw new Error('Codeup 尚未返回发布结果，请稍后回查评论')
+      review.publication = { id }
+      await atomicJson(file, review)
+      return { id }
+    })
+  }
 
   function pull(reference: MrRef) {
     return withMr(reference, async (root, api) => {
@@ -125,6 +175,7 @@ export function createMrReviews(home: string, client: () => Promise<Client>, sou
       const { snapshot, review } = await current(root)
       if (!snapshot || snapshot.id !== input.snapshotId) throw new Error('补丁快照已变化，请刷新后重新确认')
       if (review?.status === 'running') return
+      if (review?.publication && !review.publication.id) throw new Error('请先回查本次评论的发布结果')
       const source = sources().find(item => item.id === input.sourceId)
       const skill = source && reviewSkill(source)
       if (!source || !skill) throw new Error('请先绑定包含公司审查技能及开发手册的技能源')
@@ -185,9 +236,10 @@ export function createMrReviews(home: string, client: () => Promise<Client>, sou
           if (review.installation) await installations.uninstall(review.installation).catch(() => {})
         }
       }
-      return { ...view, review: { status: review.status, markdown: review.markdown, error: review.error } }
+      return { ...view, review: { status: review.status, markdown: review.markdown, error: review.error },
+        comment: commentOf(snapshot, review) }
     })
   }
 
-  return { pull, start, status }
+  return { pull, start, status, publish }
 }

@@ -1,7 +1,8 @@
 import type * as ReactType from 'react'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
-import type { Meta, MrRef, MrReviewView, Plan, PlanDetails, PlanIssue, PlanKey, PlanRow } from './contracts.ts'
+import { mrReviewCommentLimit, type Meta, type MrRef, type MrReviewComment, type MrReviewView, type Plan,
+  type PlanDetails, type PlanIssue, type PlanKey, type PlanRow } from './contracts.ts'
 import type { codeupApi } from './codeup.mjs'
 import type { deliveryOptions, mrRepos } from './merge-request.ts'
 import { createMrPanel, type Rpc } from './mr-panel.tsx'
@@ -343,7 +344,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           result.value?.plans.length ? <ul>{result.value.plans.map(row =>
             <li key={JSON.stringify(planKey(row))}><button className="dy-delivery-link" onClick={() => openPlan(planKey(row))}>{row.plan.name}</button>
               <small> · {row.projectName} · {row.workspaceName}</small></li>)}</ul> : <p>尚未关联交付计划</p>}
-      </section>{result.value?.reviewSupported ? <ReviewPanel reference={reference} /> :
+      </section>{result.value?.reviewSupported ? <ReviewPanel key={keyOf(reference)} reference={reference} title={mr.title} /> :
         <section className="dy-delivery-card dy-delivery-section" aria-label="AI 合并审查">
           <h3>AI 合并审查</h3>
           <p role="status">当前 DSH 宿主尚未加载审查接口。请重启此 DSH 实例后刷新页面。</p>
@@ -351,16 +352,18 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </main>
   }
 
-  function ReviewPanel({ reference }: { reference: MrRef }) {
+  function ReviewPanel({ reference, title }: { reference: MrRef; title: string }) {
     const { repositoryId, localId } = reference
     const [value, setValue] = useState<MrReviewView>()
     const [readError, setReadError] = useState('')
     const [actionError, setActionError] = useState('')
     const [source, setSource] = useState('')
     const [busy, setBusy] = useState<'pull' | 'review'>()
+    const [preview, setPreview] = useState(false)
     const [revision, refresh] = useState(0)
     const snapshot = value?.snapshot
     const review = value?.review
+    const comment = value?.comment
     const selected = value?.sources.find(row => row.id === source) ?? value?.sources[0]
     const report = useMemo(() => review?.markdown && DOMPurify.sanitize(marked.parse(review.markdown, { async: false }), {
       ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'strong', 'em', 'ul', 'ol', 'li', 'code', 'pre', 'blockquote',
@@ -427,7 +430,62 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       {review?.status === 'running' && <p role="status">正在生成审查报告…</p>}
       {review?.error && <p role="alert" className="dy-yx-error">{review.error}</p>}
       {report && <article className="dy-sk-markdown" aria-label="审查报告" dangerouslySetInnerHTML={{ __html: report }} />}
+      {comment?.id ? <p role="status">已发布到 Codeup 评论 · <code>{comment.id}</code></p> : comment && review?.markdown &&
+        <div className="dy-yx-actions">
+          <button type="button" disabled={blocked} onClick={() => setPreview(true)}>
+            {comment.pending ? '回查 Codeup 评论' : '预览回写评论'}
+          </button>
+        </div>}
+      {preview && comment && !comment.id && review?.markdown && snapshot &&
+        <ReviewCommentDialog key={comment.token} reference={reference} title={title} version={snapshot.version}
+          report={review.markdown} comment={comment} close={() => setPreview(false)} refresh={() => refresh(n => n + 1)} />}
     </section>
+  }
+
+  function ReviewCommentDialog({ reference, title, version, report, comment, close, refresh }: {
+    reference: MrRef; title: string; version: number; report: string; comment: MrReviewComment; close(): void; refresh(): void
+  }) {
+    const [markdown, setMarkdown] = useState(report)
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState('')
+    const length = markdown.trim().length + 2 + comment.footer.length
+    const valid = Boolean(markdown.trim()) && length <= mrReviewCommentLimit
+    async function submit(event: ReactType.FormEvent) {
+      event.preventDefault()
+      if (busy || (!comment.pending && !valid)) return
+      setBusy(true)
+      setError('')
+      try {
+        await rpc('publishMrReviewComment', { ...reference, token: comment.token, markdown })
+        close()
+      } catch (failure) {
+        setError(errorText(failure))
+      } finally {
+        setBusy(false)
+        refresh()
+      }
+    }
+    return <Modal label="审查报告回写预览" busy={busy} close={close}>
+      <h2>审查报告回写预览</h2>
+      <p>Codeup MR !{reference.localId} · {title} · 补丁版本 {version}</p>
+      <form onSubmit={submit}>
+        {comment.pending ? <p role="status">发布结果待核对。回查将读取 Codeup 评论列表。</p> :
+          <fieldset disabled={busy}>
+            <label>评论正文（Markdown）
+              <textarea rows={12} value={markdown} aria-invalid={!valid} onChange={event => setMarkdown(event.target.value)} />
+            </label>
+            <p className="dy-yx-meta">{comment.footer}</p>
+            {length > mrReviewCommentLimit && <p className="dy-yx-error">评论最多 {mrReviewCommentLimit} 字符。</p>}
+          </fieldset>}
+        {error && <Problem error={error} />}
+        <div className="dy-yx-actions dy-delivery-footer">
+          <button type="button" disabled={busy} onClick={close}>取消</button>
+          <button className="dy-yx-primary" disabled={busy || (!comment.pending && !valid)}>
+            {busy ? '正在核对…' : comment.pending ? '回查发布结果' : '确认发布到 Codeup'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   }
 
   return { Plans, Requests, RequestDetail }

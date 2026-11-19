@@ -324,6 +324,7 @@ export function apply(ctx: Context) {
     pullMrSnapshot: reviews.pull,
     startMrReview: reviews.start,
     mrReview: reviews.status,
+    publishMrReviewComment: reviews.publish,
     mrRepos: ({ workspaceId }: { workspaceId: string }) => mrRepos(workspace(workspaceId).path),
     async mrPreview({ workspaceId, key }: { workspaceId: string; key: string }) {
       return mrPreview(workspace(workspaceId).path, key, (await settings.client()).codeup)
