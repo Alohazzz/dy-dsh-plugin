@@ -1,5 +1,4 @@
 import { createDeliveryPanels } from './delivery-panels.tsx'
-import { createResearchPrototype } from './research-prototype-panel.tsx'
 import { createPlanDialog } from './create-plan-dialog.tsx'
 import type * as ReactType from 'react'
 import { createSkillPanel } from './skill-panel.tsx'
@@ -80,9 +79,9 @@ function restoreSelection(meta: Meta, preferDefault: boolean): Selection {
 }
 
 type Modal =
-  | { kind: 'discuss' | 'add'; issues: Issue[] }
+  | { kind: 'add'; issues: Issue[] }
   | { kind: 'create'; issues: [] }
-  | { kind: 'start' | 'publish' | 'move'; issue: Issue }
+  | { kind: 'publish' | 'move'; issue: Issue }
 
 window.__ModuleLoader__.load({
   id: 'dy-dsh-plugin',
@@ -90,7 +89,6 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const { Plans, Requests, RequestDetail } = createDeliveryPanels(React, rpc)
     const CreatePlanDialog = createPlanDialog(React, rpc)
-    const ResearchPrototype = createResearchPrototype(React, rpc)
     const { useEffect, useRef, useState } = React
 
     function Multi({ title, options, values, change }: {
@@ -179,10 +177,8 @@ window.__ModuleLoader__.load({
     }
 
     const actionPaths = {
-      start: 'M4 2.5 13 8l-9 5.5z',
       resume: 'M6 3H3v10h10v-3 M7 9l6-6 M9 3h4v4',
       add: 'M2 4h8 M2 8h5 M2 12h5 M11.5 7v7 M8 10.5h7',
-      discuss: 'M2 3h12v8H7l-4 3v-3H2z',
       preview: 'M4 2h6l3 3v9H4z M9 2v4h4 M6.5 9h4 M6.5 11.5h3',
       move: 'M2 5h11l-3-3 M14 11H3l3 3',
       refresh: 'M13 6a5.3 5.3 0 1 0 .2 4 M13 2v4H9',
@@ -212,10 +208,10 @@ window.__ModuleLoader__.load({
       const [loading, setLoading] = useState(false)
       const [revision, refresh] = useState(0)
       const [active, setActive] = useState<Issue>()
-      const [detail, setDetail] = useState<Details>()
+      const [loadedDetail, setDetail] = useState<Details>()
+      const detail = loadedDetail?.id === active?.id ? loadedDetail : undefined
       const [detailError, setDetailError] = useState('')
       const [marked, setMarked] = useState<Issue[]>([])
-      const [researchIssues, setResearchIssues] = useState<Issue[]>()
       const [modal, setModal] = useState<Modal>()
       const [addAfterCreate, setAddAfterCreate] = useState<Issue[]>()
       const [settingsOpen, setSettingsOpen] = useState(false)
@@ -314,20 +310,20 @@ window.__ModuleLoader__.load({
         refresh(value => value + 1)
       }
 
-      function openModal(kind: 'start' | 'publish' | 'move', issue: Issue) {
+      function openModal(kind: 'publish' | 'move', issue: Issue) {
         if (active?.id !== issue.id) setDetailError('')
         setActive(issue)
         setModal({ kind, issue })
       }
 
-      if (researchIssues) return <ResearchPrototype issues={researchIssues} workspaceId={workspaceId} close={() => setResearchIssues(undefined)} openSession={id => ctx.uiWorkspace.openSession(id)} />
+      const activePlanId = detail ? detail.planId : active?.planId
+      const activeSessionId = detail ? detail.sessionId : active?.sessionId
       if (!meta && !metaError) return <main className="dy-yx">正在读取 DSH 工作区与云效配置…</main>
       return <main className="dy-yx">
         <header><div><h2>云效议题</h2><small>{meta?.user ? '已连接 · ' + meta.organization + ' · ' + meta.user : '云效连接待配置'}</small></div>
           <div className="dy-yx-actions">
             <button onClick={() => refresh(value => value + 1)}>刷新</button>
             <button onClick={() => void connect()}>重新连接</button>
-            <button disabled={marked.length !== 0 && (marked.length !== 2 || !workspaceId)} onClick={() => setResearchIssues(marked)}>双议题调研原型</button>
             <button className={meta?.setupError ? 'dy-yx-primary' : undefined} onClick={() => setSettingsOpen(true)}>连接设置</button>
           </div>
         </header>
@@ -370,7 +366,6 @@ window.__ModuleLoader__.load({
           {notice && <div className="dy-yx-notice" role="status">{notice}</div>}
           {marked.length > 0 && <div className="dy-yx-bar dy-yx-selection">
             <strong>已选 {marked.length} 项</strong>
-            <button disabled={!workspaceId} onClick={() => setModal({ kind: 'discuss', issues: marked })}><ActionIcon name="discuss" />发起讨论</button>
             <button disabled={!workspaceId} onClick={() => setModal({ kind: 'add', issues: marked })}><ActionIcon name="add" />添加到计划</button>
             <button onClick={() => setMarked([])}>取消选择</button>
           </div>}
@@ -396,11 +391,10 @@ window.__ModuleLoader__.load({
                     {issue.plan && (issue.planId ? <button className="dy-delivery-link" onClick={() =>
                       openPlan({ project, workspaceId, planId: issue.planId! })}>{issue.plan}</button> : <span className="dy-yx-tag">{issue.plan}</span>)}
                   </div>
-                  {marked.length === 0 && <div className="dy-yx-actions">
-                    <button disabled={!workspaceId} onClick={() => issue.sessionId ? ctx.uiWorkspace.openSession(issue.sessionId) : openModal('start', issue)}>
-                      <ActionIcon name={issue.sessionId ? 'resume' : 'start'} />{issue.sessionId ? '返回绑定会话' : '直接开工'}</button>
-                    {!issue.plan && <button disabled={!workspaceId} onClick={() => setModal({ kind: 'add', issues: [issue] })}><ActionIcon name="add" />加到计划</button>}
-                    {!issue.plan && !issue.sessionId && <button disabled={!workspaceId} onClick={() => setModal({ kind: 'discuss', issues: [issue] })}><ActionIcon name="discuss" />发起讨论</button>}
+                  {marked.length === 0 && (issue.sessionId || !issue.plan) && <div className="dy-yx-actions">
+                    {issue.sessionId ? <button onClick={() => ctx.uiWorkspace.openSession(issue.sessionId!)}>
+                      <ActionIcon name="resume" />返回绑定会话</button> :
+                      <button disabled={!workspaceId} onClick={() => setModal({ kind: 'add', issues: [issue] })}><ActionIcon name="add" />添加到计划</button>}
                   </div>}
                 </div>
               </article>)}
@@ -417,9 +411,11 @@ window.__ModuleLoader__.load({
                 <div className="dy-yx-meta"><a href={active.url} target="_blank" rel="noreferrer">在云效打开 · {active.reference}</a>
                   <StatusBadge name={detail?.state.name || active.state.name} /></div>
                 <div className="dy-yx-actions">
-                  {detail?.sessionId
-                    ? <button className="dy-yx-primary" onClick={() => ctx.uiWorkspace.openSession(detail.sessionId!)}><ActionIcon name="resume" />返回绑定会话</button>
-                    : <button className="dy-yx-primary" disabled={!workspaceId} onClick={() => openModal('start', active)}><ActionIcon name="start" />直接开工</button>}
+                  {activeSessionId
+                    ? <button className="dy-yx-primary" onClick={() => ctx.uiWorkspace.openSession(activeSessionId)}><ActionIcon name="resume" />返回绑定会话</button>
+                    : activePlanId ? <button className="dy-yx-primary" onClick={() => openPlan({ project, workspaceId, planId: activePlanId })}>查看交付计划</button>
+                    : marked.length === 0 && !(detail ? detail.plan : active.plan) && <button className="dy-yx-primary" disabled={!workspaceId}
+                      onClick={() => setModal({ kind: 'add', issues: [active] })}><ActionIcon name="add" />添加到计划</button>}
                   <button disabled={!detail?.sessionId} onClick={() => openModal('publish', active)}><ActionIcon name="preview" />回写预览</button>
                   <button onClick={() => openModal('move', active)}><ActionIcon name={pending[active.id] || detail?.pendingTarget ? 'refresh' : 'move'} />{(pending[active.id] || detail?.pendingTarget) ? '回查状态' : '状态流转'}</button>
                 </div>
@@ -445,17 +441,16 @@ window.__ModuleLoader__.load({
             setAddAfterCreate(undefined)
           }} saved={() => { setMarked([]); refresh(value => value + 1); plansChanged() }} />}
         {modal && modal.kind !== 'create' && <Dialog key={modal.kind} modal={modal}
-          detail={'issue' in modal && detail?.id === modal.issue.id ? detail : undefined} detailError={detailError} meta={meta}
+          detail={'issue' in modal && detail?.id === modal.issue.id ? detail : undefined} meta={meta}
           workspaceId={workspaceId} project={project} close={() => setModal(undefined)} pending={pending}
           setPending={(id, target) => setPending(previous => ({ ...previous, [id]: target }))}
-          refresh={() => refresh(value => value + 1)} onSuccess={passed}
+          onSuccess={passed}
           onPlan={() => { setMarked([]); refresh(value => value + 1); plansChanged() }}
           onCreate={() => {
             if (modal.kind !== 'add') return
             setAddAfterCreate(modal.issues)
             setModal({ kind: 'create', issues: [] })
-          }}
-          onOpenSession={id => { setModal(undefined); refresh(value => value + 1); ctx.uiWorkspace.openSession(id) }} />}
+          }} />}
       </main>
     }
 
@@ -617,11 +612,11 @@ window.__ModuleLoader__.load({
     }
 
     function Dialog(props: {
-      modal: Exclude<Modal, { kind: 'create' }>; detail?: Details; detailError: string; meta?: Meta; workspaceId: string; project: string
-      close(): void; refresh(): void; pending: Record<string, string>; setPending(id: string, target: string): void
+      modal: Exclude<Modal, { kind: 'create' }>; detail?: Details; meta?: Meta; workspaceId: string; project: string
+      close(): void; pending: Record<string, string>; setPending(id: string, target: string): void
       onSuccess(issue: Issue, result: string): void
       onPlan(): void
-      onOpenSession(id: string): void; onCreate?(): void
+      onCreate?(): void
     }) {
       const { modal, close, detail, meta, pending, setPending, project, workspaceId } = props
       const { kind } = modal
@@ -638,10 +633,8 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = useState<Preview>()
       const [states, setStates] = useState<{ current: Option; options: Option[] }>()
       const [target, setTarget] = useState('')
-      const [notes, setNotes] = useState('')
-      const [clarify, setClarify] = useState(false)
       const targetPending = issue ? pending[issue.id] || detail?.pendingTarget : ''
-      const title = { discuss: '发起讨论', add: '添加到计划', start: '直接开工',
+      const title = { add: '添加到计划',
         publish: '回写预览', move: targetPending ? '回查状态' : '状态流转' }[kind]
 
       useEffect(() => {
@@ -676,16 +669,6 @@ window.__ModuleLoader__.load({
           setResults(results ? results.map(row => update.find(item => item.id === row.id) ?? row) : update)
           props.onPlan()
         }
-        if (kind === 'start') {
-          if (detail?.sessionId) { props.onOpenSession(detail.sessionId); return }
-          try {
-            const started = await rpc<{ sessionId: string }>('start', { ...base, notes, clarify, preset: 'standard', permission: 'danger-full-access' })
-            props.onOpenSession(started.sessionId)
-          } catch (error) {
-            props.refresh()
-            throw error
-          }
-        }
         if (kind === 'publish' && draft) {
           setDraft(await rpc<Preview>('publish', { ...base, sections: draft.sections, code: draft.code }))
         }
@@ -714,12 +697,10 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const canSubmit = kind === 'start' && (detail || props.detailError && notes.trim()) ||
-        kind === 'add' && planId && (!results || results.some(row => row.retryable)) ||
+      const canSubmit = kind === 'add' && planId && (!results || results.some(row => row.retryable)) ||
         kind === 'publish' && draft && draft.receipts.some(receipt => !receipt) ||
         kind === 'move' && (targetPending || target)
-      let action = { discuss: '', add: results ? '重试未完成项' : '确认加入',
-        start: detail?.sessionId ? '返回绑定会话' : '确认开工',
+      let action = { add: results ? '重试未完成项' : '确认加入',
         publish: draft?.receipts.some(Boolean) ? '重试未发布评论' : '确认发布',
         move: targetPending ? '仅回查' : '确认流转并回查' }[kind]
       if (busy) action = '处理中…'
@@ -730,10 +711,9 @@ window.__ModuleLoader__.load({
           <h2 id="dy-yx-dialog-title">{title}</h2>
           {issue && <p>{issue.reference} · {issue.title}</p>}
           {issues.length > 0 && <ol>{issues.map(row => <li key={row.id}>{row.reference} · {row.title}</li>)}</ol>}
-          {(kind === 'discuss' || kind === 'add') &&
+          {kind === 'add' &&
             <p>目标工作区 · {meta?.workspaces.find(item => item.id === workspaceId)?.name}</p>}
           <fieldset disabled={busy}>
-            {kind === 'discuss' && <p>讨论流程待定。</p>}
             {kind === 'add' && <>
               {!plans && !error && <p>正在读取计划…</p>}
               {plans?.length === 0 && <p>本工作区暂无可用计划。 {props.onCreate &&
@@ -746,23 +726,6 @@ window.__ModuleLoader__.load({
               {results && <ul>{results.map(row => <li key={row.id}>
                 {issues.find(item => item.id === row.id)?.reference} · {row.result}{row.error && ' · ' + row.error}
               </li>)}</ul>}
-            </>}
-            {kind === 'start' && <>
-              {detail?.sessionId ? <p>本工作区已有绑定会话 {detail.sessionId}。</p> : <>
-                <p>工作区 · {meta?.workspaces.find(item => item.id === workspaceId)?.name}</p>
-                {detail ? <p>已读取正文，附件与图片 {detail.files.length} 项。{detail.materialsError}</p> :
-                  <p>{props.detailError || '正在读取议题原文…'}</p>}
-                {detail && <details><summary>查看原文与附件</summary>
-                  <IssueMaterials detail={detail} />
-                </details>}
-                {detail?.preparedSessionId && <button type="button" onClick={() => props.onOpenSession(detail.preparedSessionId!)}>
-                  打开已准备会话
-                </button>}
-                {props.detailError && <button type="button" onClick={props.refresh}>重试读取</button>}
-                {issue?.category === 'Bug' ? <p>缺陷取证 · 先复现并定位根因</p> :
-                  <label className="dy-yx-inline"><input type="checkbox" checked={clarify} onChange={event => setClarify(event.target.checked)} />先澄清需求再执行</label>}
-                <label>发起人补充<textarea value={notes} maxLength={12000} onChange={event => setNotes(event.target.value)} /></label>
-              </>}
             </>}
             {kind === 'publish' && draft && <>
               {draft.sections.map((value, i) => <label key={i}>{i === 0 ? '开发向评论' : '测试向评论'}
@@ -790,7 +753,7 @@ window.__ModuleLoader__.load({
             <button type="button" onClick={() => retryRead(value => value + 1)}>重试读取</button>}
           <div className="dy-yx-actions">
             <button type="button" disabled={busy} onClick={close}>返回</button>
-            {kind !== 'discuss' && <button type="submit" className="dy-yx-primary" disabled={busy || !canSubmit}>{action}</button>}
+            <button type="submit" className="dy-yx-primary" disabled={busy || !canSubmit}>{action}</button>
           </div>
         </form>
       </dialog>

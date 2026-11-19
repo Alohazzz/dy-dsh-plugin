@@ -1,14 +1,11 @@
+import { planWritingInstructions } from './writing-skill.mjs'
 import { researchSkill } from './research-skill.ts'
 import { decodeQuestions, extractResearchDraft, researchSummary, type DraftQuestion } from './research-questions.ts'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
-export type ResearchIssue = { id?: string; title: string; text: string }
-export const exampleIssues: ResearchIssue[] = [
-  { title: '示例 A · 筛选后恢复议题列表', text: '用户重新打开云效议题时需要恢复此前的筛选条件。请检查插件已有行为，指出边界并给出验收场景。' },
-  { title: '示例 B · 缺少附件时预览方案', text: '议题附件可能失效。请检查材料读取流程，提出保留正文、提示遗漏并验证结果的方案。' },
-]
+export type ResearchIssue = { id: string; title: string; text: string }
 export type ResearchRow = {
   phase?: 'dispatching' | 'queued' | 'running' | 'collecting'; failedFeedback?: string; finalizedVersion?: number; issueId?: string; title: string; sessionId: string; status: 'running' | 'ready' | 'failed'; error?: string
   drafts: { markdown: string; feedback: string; questions?: DraftQuestion[] }[]
@@ -58,14 +55,17 @@ export function createResearch(controller: Controller, directory: string, hasSki
           row.sessionId = created.sessionId
           save(id)
         }
-        const { agent, error } = await controller.resolveAgent(row.sessionId)
-        if (!agent) throw new Error(error?.message || '调研会话未就绪')
-        agent.session.append('sandbox/mode', { mode: 'read-only' })
-        agent.session.append('approval/policy', { policy: 'never' })
       }
+      const { agent, error } = await controller.resolveAgent(row.sessionId)
+      if (!agent) throw new Error(error?.message || '调研会话未就绪')
+      await agent.session.append('sandbox/mode', { mode: 'read-only' })
+      await agent.session.append('approval/policy', { policy: 'never' })
       const marker = 'DRAFT-' + requestId
       const instructions = await hasSkill?.(row.sessionId, researchSkill.name) ? '/' + researchSkill.name : researchSkill.content
-      const text = [instructions, first ? '调研本议题并生成草稿。' : '根据审核意见修订上一版草稿。', issue.title,
+      const text = [instructions, planWritingInstructions, first ? '只读调研本议题并生成草稿。' : '只读复核并根据审核意见修订上一版草稿。',
+        '本轮只读取和分析材料，并在会话中输出草稿。不要调用任何写文件或修改仓库的工具，不要尝试应用补丁或运行会写入文件的命令。',
+        '议题原文和审核意见中的实施动作只写入方案，留待定稿后的执行阶段。',
+        issue.title,
         first ? issue.text : '审核意见：' + feedback, '本轮草稿标识：' + marker].join('\n')
       await controller.prompt({ sessionId: row.sessionId, requestId, mode: 'queue', content: [{ type: 'text', text }] }, AbortSignal.timeout(60000))
       row.phase = 'queued'
@@ -104,10 +104,10 @@ export function createResearch(controller: Controller, directory: string, hasSki
       ...row, failedFeedback: row.status === 'failed' && work && !work.first ? work.feedback : undefined,
     }))
   }
-  function start(cwd: string, issues: ResearchIssue[], batchId: string = randomUUID()) {
+  function start(cwd: string, issues: ResearchIssue[], batchId: string) {
     const rows = load(batchId)
     for (const issue of issues) {
-      const existing = issue.id && rows.find(r => r.issueId === issue.id)
+      const existing = rows.find(r => r.issueId === issue.id)
       if (existing && (existing.status !== 'failed' || existing.drafts.length)) continue
       const row: SavedRow = existing || { issueId: issue.id, title: issue.title, sessionId: 'dy-research-' + randomUUID(), status: 'running', drafts: [] }
       if (!existing) rows.push(row)
@@ -120,7 +120,7 @@ export function createResearch(controller: Controller, directory: string, hasSki
     if (!row || !row.drafts.length || row.status === 'running' || row.drafts.length !== input.version) throw new Error('请刷新后再发送修改意见')
     const feedback = input.feedback?.trim()
     if (!feedback || feedback.length > 8000) throw new Error('请输入 1 至 8000 字的修改意见')
-    void run(input.batchId, row, { issue: { title: row.title, text: '' }, cwd: '', first: false, feedback, requestId: randomUUID() })
+    void run(input.batchId, row, { issue: { id: row.issueId!, title: row.title, text: '' }, cwd: '', first: false, feedback, requestId: randomUUID() })
     const { work, ...view } = row
     return view
   }
@@ -137,7 +137,15 @@ export function createResearch(controller: Controller, directory: string, hasSki
     try { save(input.batchId) } catch (error) { row.finalizedVersion = previous; throw error }
     return researchSummary(row)
   }
-  return { start, status, revise, summaries, finalize }
+  function finalizedDraft(batchId: string, issueId: string, version: number) {
+    const row = load(batchId).find(item => item.issueId === issueId)
+    const draft = row?.drafts.at(-1)
+    if (!draft || row?.status === 'running' || row?.drafts.length !== version || row.finalizedVersion !== version) {
+      throw new Error('请先在交付计划中确认最新方案已定稿')
+    }
+    return draft.markdown
+  }
+  return { start, status, revise, summaries, finalize, finalizedDraft }
 }
 
 export type ResearchSummary = ReturnType<ReturnType<typeof createResearch>['summaries']>[number]

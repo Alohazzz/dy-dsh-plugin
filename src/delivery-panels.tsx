@@ -160,21 +160,28 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </Modal>
   }
 
-  function IssueTable({ issues, remove, summaries, open, finalize, busy, unavailable, legacy, openSession }: {
+  function IssueTable({ issues, remove, summaries, open, finalize, execute, executing, executionSupported, busy, unavailable, legacy, openSession }: {
     issues: PlanIssue[]; remove(issue: PlanIssue): void; summaries?: ResearchSummary[]; open(id: string): void
-    finalize(row: ResearchSummary): void; busy: boolean; unavailable: boolean; legacy: boolean; openSession(id: string): void
+    finalize(row: ResearchSummary): void; execute(id: string, version: number): void; executing?: string; executionSupported?: boolean
+    busy: boolean; unavailable: boolean; legacy: boolean; openSession(id: string): void
   }) {
     return <Table headers={['议题编号', '标题', '负责人', '云效状态', '方案状态', '操作']}>
       {issues.map(issue => {
         const row = summaries?.find(s => s.issueId === issue.id)
+        const executionVersion = issue.executionVersion ?? (row?.label === '已定稿' ? row.version : undefined)
         return <tr key={issue.id}><td>{issue.url ? <a href={issue.url} target="_blank" rel="noreferrer">{issue.reference}</a> : issue.reference}</td>
         <td>{issue.error || issue.title || '—'}</td><td>{issue.owner || '—'}</td><td>{issue.state.name || '—'}</td>
         <td>{summaries ? <div className="dy-plan-issue-actions"><Status label={row?.label || '未调研'} />{row?.progress && row.progress !== row.label && <Status label={row.progress} />}</div> : unavailable ? '状态不可用' : '读取中…'}</td>
         <td><div className="dy-plan-issue-actions">
           {row && (row.version > 0 || row.label === '调研失败') && <button className="dy-delivery-link" onClick={() => open(issue.id)}>
             {row.version ? '查看 v' + row.version : '查看失败原因'}</button>}
-          {row && <button className="dy-delivery-link" onClick={() => openSession(row.sessionId)}>查看会话</button>}
+          {row && <button className="dy-delivery-link" onClick={() => openSession(row.sessionId)}>查看调研会话</button>}
           {row?.canFinalize && <button title={legacy ? '请在新版 DSH 工作台定稿' : undefined} disabled={busy || legacy} onClick={() => finalize(row)}>标记定稿</button>}
+          {issue.sessionId ? <button className="dy-delivery-link" onClick={() => openSession(issue.sessionId!)}>查看执行会话</button>
+            : executionVersion !== undefined && <button className="dy-yx-primary" disabled={busy || !executionSupported || Boolean(executing)}
+              onClick={() => execute(issue.id, executionVersion)}>
+              {executing === issue.id ? '正在派发…' : issue.executionVersion ? '重试执行 v' + issue.executionVersion : '开始执行'}
+            </button>}
           <button type="button" className="dy-delivery-link" aria-label={'移出计划 ' + issue.reference}
           onClick={() => remove(issue)}>移出计划</button></div></td></tr>})}
       {!issues.length && <tr><td colSpan={6} className="dy-delivery-issue-empty">暂无计划议题</td></tr>}
@@ -220,6 +227,9 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const [modal, setModal] = useState<'configure' | 'link' | 'create'>()
     const [busy, setBusy] = useState(false)
     const [notice, setNotice] = useState('')
+    const [executing, setExecuting] = useState<string>()
+    const [executionError, setExecutionError] = useState('')
+    const [executionSessions, setExecutionSessions] = useState<Record<string, string>>({})
     const [removing, setRemoving] = useState<PlanIssue>()
     const detail = result.value
     const [answering, setAnswering] = useState(false)
@@ -279,7 +289,25 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
         setNotice('已定稿 · v' + row.version)
       } catch (e) { setNotice(errorText(e)) } finally { setBusy(false) }
     }
+    async function execute(id: string, version: number) {
+      if (executing) return
+      setExecuting(id)
+      setExecutionError('')
+      try {
+        const { sessionId } = await rpc<{ sessionId: string }>('executePlanIssue', { ...scope, id, version })
+        setExecutionSessions(previous => ({ ...previous, [id]: sessionId }))
+        changed()
+        openSession(sessionId)
+      } catch (error) {
+        setExecutionError(errorText(error))
+        result.retry()
+      } finally {
+        setExecuting(undefined)
+      }
+    }
     const questionCount = summaries?.filter(r => detail?.plan.members.includes(r.issueId || '')).reduce((n, r) => n + (r.count || 0), 0) || 0
+    const executionUnavailable = detail && !detail.executionSupported && detail.issues.some(issue =>
+      !issue.sessionId && (issue.executionVersion !== undefined || summaries?.some(row => row.issueId === issue.id && row.label === '已定稿')))
     const target = detail?.plan.delivery?.target || detail?.plan.targetBranch
     function done(ref?: MrRef) {
       setNotice(ref ? (modal === 'link' ? '已关联 MR !' : '已关联计划与 MR !') + ref.localId : '已保存交付分支')
@@ -333,7 +361,11 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           <button disabled={!questionCount} onClick={() => setAnswering(true)}>批量答疑{questionCount > 0 && '（' + questionCount + '）'}</button></div>
         {(batch.error || summaryError) && <Problem error={batch.error || summaryError!} retry={batch.retry} />}
         {startError && <Problem error={startError} retry={startResearch} />}
-        <IssueTable openSession={openSession} issues={detail.issues} remove={setRemoving} summaries={summaries} busy={busy} unavailable={!!(summaryError || batch.error)} legacy={legacy} open={setPreviewIssue} finalize={finalize} /></section>
+        {executionError && <Problem error={executionError} />}
+        {executionUnavailable && <p role="status" className="dy-yx-notice">请更新研发工作台插件并重启 DSH，再开始执行。</p>}
+        <IssueTable openSession={openSession} issues={detail.issues.map(issue => ({ ...issue, sessionId: executionSessions[issue.id] ?? issue.sessionId }))}
+          execute={execute} executing={executing} executionSupported={detail.executionSupported} remove={setRemoving} summaries={summaries}
+          busy={busy} unavailable={!!(summaryError || batch.error)} legacy={legacy} open={setPreviewIssue} finalize={finalize} /></section>
       {previewIssue && researchPlan && <Modal label="方案预览" drawer dismissOnBackdrop busy={false} close={() => setPreviewIssue(undefined)}>
         <header><h2>方案预览</h2><button onClick={() => setPreviewIssue(undefined)}>关闭</button></header>
         <PlanResearch initialIssue={previewIssue} workspaceId={scope.workspaceId} openSession={openSession}

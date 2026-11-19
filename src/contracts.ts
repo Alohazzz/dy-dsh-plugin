@@ -7,7 +7,7 @@ export type Issue = IssueKey & {
 export type Details = Issue & {
   body: ({ text: string } | { file: number })[]
   text: string; materialsError?: string; files: { name: string; url: string; image: boolean }[]
-  pendingTarget?: string; preparedSessionId?: string
+  pendingTarget?: string
 }
 export type Search = {
   project: string; category: string; query: string; mine: boolean; status: string[]
@@ -40,9 +40,9 @@ export type PlanCreate = Pick<Plan, 'name' | 'branch' | 'end'> & {
 export type PlanBranchCheck = { localExists: boolean; remoteExists: boolean }
 export type PlanKey = { project: string; workspaceId: string; planId: string }
 export type PlanRow = PlanKey & { plan: Plan; projectName: string; workspaceName: string; mrStatus?: string }
-export type PlanIssue = Pick<Issue, 'id' | 'reference' | 'title' | 'owner' | 'state' | 'url'> & { error?: string }
+export type PlanIssue = Pick<Issue, 'id' | 'reference' | 'title' | 'owner' | 'state' | 'url' | 'sessionId'> & { error?: string; executionVersion?: number }
 export type MrCandidate = { localId: number; title: string; target: string; url: string }
-export type PlanDetails = { plan: Plan; issues: PlanIssue[]; mrStatus?: string; candidates: MrCandidate[]; mrError?: string }
+export type PlanDetails = { plan: Plan; issues: PlanIssue[]; mrStatus?: string; candidates: MrCandidate[]; mrError?: string; executionSupported?: boolean }
 export type Preview = { code: string; sections: string[]; receipts: ({ id: string; time: string } | null)[]; error?: string }
 export type PlanResult = { id: string; result: string; error?: string; retryable?: boolean }
 

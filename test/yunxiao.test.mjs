@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { createClient } from '../src/yunxiao-client.mjs'
-import { createHandler } from '../src/yunxiao.mjs'
+import { createHandler, sessionPaths } from '../src/yunxiao.mjs'
 
 test('云效编号查询、会话恢复、评论补发与状态确认', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'dy-yunxiao-'))
@@ -63,10 +63,12 @@ test('云效编号查询、会话恢复、评论补发与状态确认', async t 
   const read = await run('read PROJ-42')
   assert.equal(read.kind, 'success', read.text)
   assert.match(read.text, /正文[\s\S]*a\.png/)
-  const start = await run('start PROJ-42')
-  assert.equal(start.kind, 'success', start.text)
-  assert.match(prompts[0].content[0].text, /PROJ-42/)
-  const discussion = start.text.split('议题原文：')[1].replace(/issue\.md$/, 'discussion.md')
+  assert.equal((await run('start PROJ-42')).kind, 'error')
+  assert.equal(prompts.length, 0)
+  const { folder, binding, discussion } = sessionPaths(agent, home)
+  await mkdir(home)
+  await mkdir(folder, { recursive: true })
+  await writeFile(binding, JSON.stringify({ organization: 'org', id: item.id, reference: item.serialNumber }))
   const work = '## 修改方案汇总\n\n修改说明\n\n## 影响范围与测试（测试向）\n\n测试说明\n\n## 价值评分\n\n暂不回写'
   await writeFile(discussion, work)
   const preview = await run('preview')

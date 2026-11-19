@@ -1,6 +1,6 @@
 // Builds an isolated DSH package with the prototype rendered in the real workbench slot.
 import { build } from 'esbuild'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,6 +29,7 @@ try {
       } }],
     }),
     writeFile(join(preview, 'package.json'), await readFile(join(root, 'package.json'))),
+    cp(join(root, 'skills'), join(preview, 'skills'), { recursive: true }),
     writeFile(join(dist, 'panel.css'), (await readFile(join(root, 'src/panel.css'), 'utf8')) +
       '\n' + await readFile(new URL('./variants.css', import.meta.url), 'utf8')),
     writeFile(patch, '- insert:\n    - id: dy-yunxiao\n      name: ' + JSON.stringify(host.replaceAll('\\', '/')) + '\n'),

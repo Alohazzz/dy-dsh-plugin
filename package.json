@@ -19,6 +19,7 @@
   "files": [
     "dist",
     "skills/yunxiao-dsh-research/SKILL.md",
+    "skills/tech-doc-style-chinese",
     "cordis.patch.yml",
     "README.md"
   ],

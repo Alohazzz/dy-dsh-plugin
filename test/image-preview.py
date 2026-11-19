@@ -18,26 +18,23 @@ def check(page):
     page.get_by_role("button", name="研发工作台", exact=True).click()
     page.get_by_role("button", name="预览测试", exact=True).click()
     detail = page.get_by_role("region", name="议题详情")
-    for nested in [False, True]:
-        region = detail
-        if nested:
-            detail.get_by_role("button", name="直接开工").click()
-            region = page.get_by_role("dialog", name="直接开工")
-            region.get_by_text("查看原文与附件").click()
-        body = region.locator(".dy-yx-description")
-        assert body.locator(":scope > div").all_text_contents()[::2] == ["缺陷描述", "发生频率"]
-        expect(body.locator(":scope > div").nth(1).get_by_role("button", name="预览 sample.svg")).to_be_visible()
-        expect(region.get_by_role("link", name="普通附件.txt")).to_be_visible()
-        region.get_by_role("button", name="预览 sample.svg").click()
-        viewer = page.get_by_role("dialog", name="图片预览")
-        image = viewer.get_by_role("img")
-        viewer.get_by_role("button", name="原始尺寸").click()
-        expect(image).to_have_css("height", "2600px")
-        viewer.get_by_role("button", name="适应窗口").click()
-        assert image.bounding_box()["height"] < 2600
-        page.keyboard.press("Escape")
-        expect(viewer).to_be_hidden()
-        expect(region).to_be_visible()
-        region.get_by_role("button", name="sample.svg", exact=True).click()
-        viewer.get_by_role("button", name="关闭预览").click()
-        expect(viewer).to_be_hidden()
+    expect(detail.get_by_role("button", name="添加到计划")).to_be_visible()
+    expect(detail.get_by_role("button", name="直接开工")).to_have_count(0)
+    region = detail
+    body = region.locator(".dy-yx-description")
+    assert body.locator(":scope > div").all_text_contents()[::2] == ["缺陷描述", "发生频率"]
+    expect(body.locator(":scope > div").nth(1).get_by_role("button", name="预览 sample.svg")).to_be_visible()
+    expect(region.get_by_role("link", name="普通附件.txt")).to_be_visible()
+    region.get_by_role("button", name="预览 sample.svg").click()
+    viewer = page.get_by_role("dialog", name="图片预览")
+    image = viewer.get_by_role("img")
+    viewer.get_by_role("button", name="原始尺寸").click()
+    expect(image).to_have_css("height", "2600px")
+    viewer.get_by_role("button", name="适应窗口").click()
+    assert image.bounding_box()["height"] < 2600
+    page.keyboard.press("Escape")
+    expect(viewer).to_be_hidden()
+    expect(region).to_be_visible()
+    region.get_by_role("button", name="sample.svg", exact=True).click()
+    viewer.get_by_role("button", name="关闭预览").click()
+    expect(viewer).to_be_hidden()

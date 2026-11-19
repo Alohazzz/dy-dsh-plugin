@@ -1,6 +1,6 @@
 import { researchProgress } from './research-questions.ts'
 import type * as ReactType from 'react'
-import type { Issue, PlanKey } from './contracts.ts'
+import type { PlanKey } from './contracts.ts'
 import type { ResearchRow } from './research-prototype.ts'
 import type { Rpc } from './mr-panel.tsx'
 import { createQuestionReview } from './research-question-panel.tsx'
@@ -16,13 +16,12 @@ export function createResearchPrototype(React: typeof ReactType, rpc: Rpc) {
     })
     return <article className="dy-sk-markdown" dangerouslySetInnerHTML={{ __html: html }} />
   })
-  return function ResearchPrototype({ issues = [], workspaceId, close, openSession, plan, initialReview = false, initialIssue }: {
-    initialReview?: boolean; initialIssue?: string; issues?: Issue[]; plan?: PlanKey & { name: string; members: string[] }; workspaceId: string; close(): void; openSession(id: string): void
+  return function ResearchPrototype({ workspaceId, close, openSession, plan, initialReview = false, initialIssue }: {
+    initialReview?: boolean; initialIssue?: string; plan: PlanKey & { name: string; members: string[] }; workspaceId: string; close(): void; openSession(id: string): void
   }) {
-    const storageKey = 'dy.research-prototype.' + JSON.stringify([workspaceId, issues.map(i => [i.project, i.id])])
-    const [batchId, setBatchId] = React.useState(() => plan ? '' : sessionStorage.getItem(storageKey) || '')
+    const [batchId, setBatchId] = React.useState('')
     const [rows, setRows] = React.useState<ResearchRow[]>([])
-    const [reviewing, review] = React.useState(initialReview)
+    const reviewing = initialReview
     const [selected, select] = React.useState(0)
     const [previewSession, setPreviewSession] = React.useState<string>()
     const [notes, setNotes] = React.useState<Record<string, string | undefined>>({})
@@ -32,14 +31,13 @@ export function createResearchPrototype(React: typeof ReactType, rpc: Rpc) {
     const [sending, setSending] = React.useState('')
     const [submitted, setSubmitted] = React.useState<Record<string, string>>({})
     React.useEffect(() => {
-      if (!plan) return
       const abort = new AbortController()
       rpc<{ batchId: string; rows: ResearchRow[] }>('planResearch', { project: plan.project, workspaceId, planId: plan.planId }, abort.signal)
         .then(value => {
           if (!abort.signal.aborted) { setRows(value.rows); select(Math.max(0, value.rows.findIndex(r => r.issueId === initialIssue))); setBatchId(value.batchId); setSyncError('') }
         }, e => { if (!abort.signal.aborted) setSyncError(String(e)) })
       return () => abort.abort()
-    }, [plan?.project, plan?.planId, workspaceId])
+    }, [plan.project, plan.planId, workspaceId])
     React.useEffect(() => {
       if (!batchId) return
       const abort = new AbortController()
@@ -47,26 +45,17 @@ export function createResearchPrototype(React: typeof ReactType, rpc: Rpc) {
       async function poll() {
         try {
           const next = await rpc<ResearchRow[]>('researchStatus', { batchId }, abort.signal)
-          if (!abort.signal.aborted) { setRows(plan ? next.filter(row => plan.members.includes(row.issueId || '')) : next); setSyncError('') }
+          if (!abort.signal.aborted) { setRows(next.filter(row => plan.members.includes(row.issueId || ''))); setSyncError('') }
         } catch (e) {
           if (!abort.signal.aborted) {
             setSyncError(String(e))
-            if (String(e).includes('请重新开始')) { sessionStorage.removeItem(storageKey); setBatchId(''); setRows([]) }
           }
         }
         if (!abort.signal.aborted) timer = setTimeout(poll, 1200)
       }
       void poll()
       return () => { abort.abort(); clearTimeout(timer) }
-    }, [batchId, storageKey, plan])
-    async function start() {
-      setBusy(true); setError('')
-      try {
-        const value = await rpc<{ batchId: string; rows: ResearchRow[] }>('researchStart', { workspaceId, issues: issues.map(({ id, project }) => ({ id, project })) })
-        sessionStorage.setItem(storageKey, value.batchId)
-        setRows(value.rows); setBatchId(value.batchId)
-      } catch (e) { setError(String(e)) } finally { setBusy(false) }
-    }
+    }, [batchId, plan])
     const row = reviewing ? rows.find(item => item.sessionId === previewSession) : rows[selected]
     const draft = row?.drafts.at(-1)
     const feedbackText = row ? notes[row.sessionId] ?? row.failedFeedback ?? '' : ''
@@ -82,13 +71,9 @@ export function createResearchPrototype(React: typeof ReactType, rpc: Rpc) {
         setNotes(old => ({ ...old, [row.sessionId]: undefined }))
       } catch (e) { setError(String(e)) } finally { setSending(''); setBusy(false) }
     }
-    const Container = plan ? 'div' : 'main'
-    return <Container className="dy-yx">{!initialIssue && <header><h2>{plan ? plan.name + ' · 批量答疑' : '双议题调研原型'}</h2><button onClick={close}>{plan ? '返回计划' : '返回议题'}</button></header>}
-      {!plan && !batchId && <section><p>{issues.length ? issues.map(i => i.reference + ' ' + i.title).join(' / ') : '示例 A · 筛选后恢复议题列表 ／ 示例 B · 缺少附件时预览方案'}</p>
-        <button className="dy-yx-primary" disabled={busy} onClick={start}>并行调研两个议题</button></section>}
+    return <div className="dy-yx">{!initialIssue && <header><h2>{plan.name} · 批量答疑</h2><button onClick={close}>返回计划</button></header>}
       {(syncError || (!draft && error)) && <p role="alert">{syncError || error}</p>}
-      {!plan && <div className="dy-yx-actions">{rows.length > 0 && <button aria-pressed={reviewing} onClick={() => review(true)}>集中答疑</button>}{rows.map((item, i) => <button key={item.sessionId} aria-pressed={!reviewing && selected === i} onClick={() => { select(i); review(false) }}>{item.title} · {{ running: '生成中', ready: '待审核', failed: '失败' }[item.status]}</button>)}</div>}
-      {plan && !batchId && !syncError && <p role="status">正在读取方案…</p>}
+      {!batchId && !syncError && <p role="status">正在读取方案…</p>}
       <div className={reviewing && row ? 'dy-research-split' : undefined}>
         {batchId && <div hidden={!reviewing} className="dy-research-questions"><QuestionReview rows={rows} batchId={batchId}
           preview={i => setPreviewSession(rows[i].sessionId)} /></div>}
@@ -112,6 +97,6 @@ export function createResearchPrototype(React: typeof ReactType, rpc: Rpc) {
             {error && <p role="alert">{error}</p>}
             <button className="dy-yx-primary" disabled={busy || row.status === 'running' || !feedbackText.trim()} onClick={send}>发送并修订</button>
           </div></>}
-      </section>}</div></Container>
+      </section>}</div></div>
   }
 }

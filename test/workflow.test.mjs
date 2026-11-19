@@ -1,33 +1,186 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { setImmediate } from 'node:timers/promises'
 import { test } from 'node:test'
 import { createClient, YunxiaoHttpError } from '../src/yunxiao-client.mjs'
 import { createHandler, digest } from '../src/yunxiao.mjs'
+import { apply } from '../src/host.ts'
+import { createResearch } from '../src/research-prototype.ts'
+import { researchSkill } from '../src/research-skill.ts'
+import { planWritingInstructions, writingSkill } from '../src/writing-skill.mjs'
 import { createWorkflow, executionSkill } from '../src/workflow.ts'
 
-test('同一工作区并发开工只派发一次，宿主重启后复用会话', async t => {
+async function addPlannedIssue(workflow, cwd, { project, id }) {
+  const plan = await workflow.createPlan(cwd, project, { name: '交付计划', branch: 'feature/test', end: '2026-11-20' })
+  const [result] = await workflow.addToPlan(cwd, project, plan.id, [id])
+  assert.equal(result.result, '成功', result.error)
+  return { project, id, planId: plan.id }
+}
+
+test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧入口', async t => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'dy-plan-rpc-')))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  const oldHome = process.env.DSH_HOME
+  process.env.DSH_HOME = cwd
+  t.after(() => {
+    if (oldHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = oldHome
+  })
+  const git = (...args) => execFileSync('git', args, { cwd, stdio: 'pipe' })
+  git('init', '--initial-branch=main')
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'initial')
+
+  const workspaceId = 'workspace'
+  const input = { workspaceId, project: 'project', planId: 'plan', id: 'issue', version: 2 }
+  const home = join(cwd, 'dy-yunxiao')
+  const batchId = digest(JSON.stringify(['org', workspaceId, input.project, input.planId]))
+  await mkdir(join(home, 'research'), { recursive: true })
+  await writeFile(join(home, 'plans-' + digest('org', input.project, cwd) + '.json'), JSON.stringify([
+    { id: input.planId, name: '交付计划', branch: 'feature/test', end: '2026-11-20', members: [input.id] },
+  ]))
+  await writeFile(join(home, 'research', batchId + '.json'), JSON.stringify([{
+    issueId: input.id, title: 'TEST-1', sessionId: 'research-1', status: 'ready', finalizedVersion: 1,
+    drafts: [{ markdown: '# 原定稿', questions: [], feedback: '' }, { markdown: '# 当前方案', questions: [], feedback: '' }],
+  }]))
+  t.mock.method(globalThis, 'fetch', async url => {
+    const path = new URL(url).pathname
+    if (path.endsWith('/attachments')) return Response.json([])
+    assert.ok(path.endsWith('/workitems/issue'))
+    return Response.json({ id: 'issue', spaceId: 'project', serialNumber: 'TEST-1', description: '原文' })
+  })
+
+  let endpoint
+  const registeredSkills = []
+  const created = []
+  const prompts = []
+  apply({
+    get() {}, on() {}, tools: { guard() {} }, commands: { register() {} },
+    inject(_names, install) {
+      install({ skills: { register: skill => registeredSkills.push(skill), registerProvider() {} } })
+    },
+    credentials: { readRecord: async () => ({ kind: 'api-key', key: 'test-token', env: { YUNXIAO_ORG_ID: 'org' } }) },
+    workspaceRegistry: { get: id => id === workspaceId ? { id, path: cwd } : undefined },
+    connection: { fetch: { register(route) { if (route.path === '/api/dy-yunxiao') endpoint = route.fetch } } },
+    sessionController: {
+      create: async input => { created.push(input) },
+      prompt: async input => { prompts.push(input) },
+    },
+  })
+  assert.ok(registeredSkills.includes(writingSkill))
+  assert.match(writingSkill.content, /## 参考资料路由/)
+  for (const skill of [executionSkill, researchSkill]) {
+    assert.ok(registeredSkills.find(item => item.name === skill.name).content.includes(planWritingInstructions))
+  }
+  const rpc = async (method, input) => (await endpoint(new Request('http://localhost/api/dy-yunxiao', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ method, input }),
+  }))).json()
+  for (const method of ['start', 'researchStart']) {
+    assert.match((await rpc(method, input)).error, /未知云效操作/)
+  }
+  assert.match((await rpc('executePlanIssue', { ...input, id: 'other' })).error, /不在当前交付计划/)
+  assert.match((await rpc('executePlanIssue', input)).error, /检出源分支/)
+  git('switch', '-c', 'feature/test')
+  assert.match((await rpc('executePlanIssue', input)).error, /最新方案已定稿/)
+  assert.match((await rpc('executePlanIssue', { ...input, version: 1 })).error, /最新方案已定稿/)
+  assert.equal(created.length, 0)
+  assert.equal(prompts.length, 0)
+  const finalized = await rpc('researchFinalize', { batchId, sessionId: 'research-1', version: 2 })
+  assert.equal(finalized.value.label, '已定稿')
+  assert.equal((await rpc('workbenchPlan', input)).value.executionSupported, true)
+  const execution = await rpc('executePlanIssue', input)
+  assert.ok(execution.value?.sessionId, execution.error)
+  const { sessionId } = execution.value
+  assert.deepEqual(created, [{ sessionId, cwd, agentPreset: 'standard' }])
+  assert.equal(prompts.length, 1)
+  assert.equal(prompts[0].mode, 'queue')
+  assert.ok(prompts[0].content[0].text.startsWith(executionSkill.content))
+  assert.ok(prompts[0].content[0].text.includes(planWritingInstructions))
+  assert.match(prompts[0].content[0].text, /src\/module\.ts:42/)
+  assert.match(prompts[0].content[0].text, /^## 修改方案汇总\r?\n面向开发人员/m)
+  assert.match(prompts[0].content[0].text, /^## 影响范围与测试\r?\n面向测试人员.*区分已验证、验证失败和待验证项/m)
+  assert.equal((await rpc('workbenchPlan', input)).value.issues[0].sessionId, sessionId)
+  assert.equal(await readFile(join(cwd, '.dsh', 'yunxiao', digest(sessionId), 'plan.md'), 'utf8'), '# 当前方案')
+})
+
+test('调研和同会话修订均设置只读并要求使用相对路径和行号', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'dy-research-writing-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  const prompts = []
+  const events = []
+  let researchSkillAvailable = false
+  const research = createResearch({
+    create: async ({ sessionId }) => ({ sessionId }),
+    resolveAgent: async id => ({ agent: { session: {
+      append: async (name, value) => { events.push([id, name, value]) },
+    } } }),
+    prompt: async input => {
+      prompts.push(input)
+      events.push([input.sessionId, 'prompt'])
+    },
+    wait: async () => {
+      const { requestId } = prompts.at(-1)
+      const text = ['DRAFT-' + requestId, '# 方案', '```json', '[]', '```'].join('\n')
+      return { reason: 'idle', output: { records: [{ event: { data: { message: { content: [{ type: 'text', text }] } } } }] } }
+    },
+  }, cwd, async () => researchSkillAvailable)
+  const batchId = digest('writing-test')
+  const { rows: [{ sessionId }] } = research.start(cwd, [{ id: 'issue', title: '测试议题', text: '议题原文' }], batchId)
+  await setImmediate()
+  assert.equal(research.status({ batchId })[0].drafts.length, 1)
+  researchSkillAvailable = true
+  research.revise({ batchId, sessionId, version: 1, feedback: '补充回归条件' })
+  await setImmediate()
+  assert.equal(research.status({ batchId })[0].drafts.length, 2)
+  const [draft, revision] = prompts.map(prompt => prompt.content[0].text)
+  assert.ok(draft.startsWith(researchSkill.content))
+  assert.ok(revision.startsWith('/' + researchSkill.name + '\n'))
+  assert.match(revision, /补充回归条件/)
+  const round = [
+    [sessionId, 'sandbox/mode', { mode: 'read-only' }],
+    [sessionId, 'approval/policy', { policy: 'never' }],
+    [sessionId, 'prompt'],
+  ]
+  assert.deepEqual(events, [...round, ...round])
+  for (const prompt of prompts) {
+    assert.equal(prompt.sessionId, sessionId)
+    const text = prompt.content[0].text
+    assert.ok(text.includes(planWritingInstructions))
+    assert.match(text, /不要调用任何写文件或修改仓库的工具/)
+    assert.match(text, /src\/module\.ts:42/)
+  }
+})
+
+test('同一计划并发执行只派发一次，宿主重启后复用会话', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'dy-yunxiao-workflow-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
   let sessions = 0
   let prompts = 0
   const options = {
-    home: join(cwd, 'state'),
+    home: join(cwd, 'state'), branchExists: async () => {},
     client: () => ({
       organization: 'org',
       get: async () => ({ id: 'issue', serialNumber: 'TASK-1', spaceId: 'project', description: '正文' }),
-      attachments: async () => [],
+      attachments: async () => [], schedule: async () => {},
     }),
     host: {
       create: async () => { sessions += 1 },
       prompt: async () => { prompts += 1 },
     },
   }
-  const input = { cwd, project: 'project', id: 'issue' }
   const workflow = createWorkflow(options)
-  const [one, two] = await Promise.all([workflow.start(input), workflow.start(input)])
-  const afterRestart = await createWorkflow(options).start(input)
+  const input = await addPlannedIssue(workflow, cwd, { project: 'project', id: 'issue' })
+  const prepare = async () => ({ cwd, version: 1, readDraft: () => '# 定稿' })
+  await assert.rejects(workflow.executePlan(cwd, { ...input, id: 'unplanned' }, prepare), /不在当前交付计划/)
+  await assert.rejects(workflow.executePlan(cwd, input, async () => ({
+    cwd, version: 1, readDraft() { throw new Error('方案尚未定稿') },
+  })), /尚未定稿/)
+  assert.equal(sessions, 0)
+  assert.equal(prompts, 0)
+  const [one, two] = await Promise.all([workflow.executePlan(cwd, input, prepare), workflow.executePlan(cwd, input, prepare)])
+  const afterRestart = await createWorkflow(options).executePlan(cwd, input, prepare)
   assert.equal(one.sessionId, two.sessionId)
   assert.equal(one.sessionId, afterRestart.sessionId)
   assert.equal(sessions, 1)
@@ -35,19 +188,23 @@ test('同一工作区并发开工只派发一次，宿主重启后复用会话',
 })
 
 for (const available of [true, false]) {
-  test(`首轮应答丢失后用原材料和原请求从命令重试，执行技能可用=${available}`, async t => {
+  test(`首轮应答丢失后从计划按原定稿和原请求重试，执行技能可用=${available}`, async t => {
     const cwd = await mkdtemp(join(tmpdir(), 'dy-launch-'))
     t.after(() => rm(cwd, { recursive: true, force: true }))
     const home = join(cwd, 'state')
     const key = { project: 'project', id: 'issue' }
-    const notes = '只处理门诊 /other-skill'
+    const worktree = join(cwd, 'worktree')
+    await mkdir(worktree)
+    const approved = '# 只处理门诊 /other-skill'
+    let markdown = approved
+    const prepare = async () => ({ cwd: worktree, version: 2, readDraft: () => markdown })
     let reads = 0
     let creates = 0
     let discoveries = 0
     const accepted = new Map()
     let issue = { ...key, serialNumber: 'REQ-12', categoryId: available ? 'Req' : 'Bug', description: '确认时的原文' }
-    const api = { organization: 'org', get: async () => { reads++; return issue }, attachments: async () => [] }
-    const options = { home, client: () => api, host: {
+    const api = { organization: 'org', get: async () => { reads++; return issue }, attachments: async () => [], schedule: async () => {} }
+    const options = { home, branchExists: async () => {}, client: () => api, host: {
       create: async () => { creates++ },
       hasExecutionSkill: async () => { discoveries++; return available },
       prompt: async request => {
@@ -59,36 +216,42 @@ for (const available of [true, false]) {
         throw new Error('接收后应答丢失')
       },
     } }
-    await assert.rejects(createWorkflow(options).start({ ...key, cwd, notes, clarify: true }), /应答丢失/)
+    const input = await addPlannedIssue(createWorkflow(options), cwd, key)
+    await assert.rejects(createWorkflow(options).executePlan(cwd, input, prepare), /应答丢失/)
+    markdown = '# 未定稿的修订'
     issue = { ...issue, description: '云效已修改', categoryId: 'Task' }
     const workflow = createWorkflow(options)
     const { sessionId, text } = [...accepted.values()][0]
-    const run = createHandler({ home, clientFactory: () => api, startBound: workflow.start })
-    const result = await run({ rawInput: 'start REQ-12', agent: { status: 'idle', session: { id: sessionId, header: { cwd } } } })
-    assert.equal(result.kind, 'success', result.text)
+    await assert.rejects(workflow.executePlan(cwd, input, async () => ({ ...await prepare(), version: 3 })), /原定稿版本/)
+    assert.equal((await workflow.executePlan(cwd, input, prepare)).sessionId, sessionId)
     assert.equal((await workflow.bindingFor(cwd, key)).dispatched, true)
-    assert.equal(reads, 1)
+    assert.equal(reads, 2)
     assert.equal(creates, 1)
     assert.equal(discoveries, 1)
     assert.equal(accepted.size, 1)
-    const manifest = join(cwd, '.dsh', 'yunxiao', digest(sessionId), 'task.json')
+    const manifest = join(worktree, '.dsh', 'yunxiao', digest(sessionId), 'task.json')
     assert.ok(text.includes(manifest))
+    assert.match(text, /tech-doc-style-chinese/)
+    assert.match(text, /不删除前置条件、适用范围、例外/)
     assert.equal(text.startsWith('/' + executionSkill.name + '\n'), available)
     assert.doesNotMatch(text, /other-skill/)
     assert.match(available ? executionSkill.content : text, /用户要求提交.*议题编号/)
     const task = JSON.parse(await readFile(manifest, 'utf8'))
-    assert.equal(task.notes, notes)
     assert.equal(task.reference, 'REQ-12')
-    assert.equal(task.mode, available ? '先澄清' : '缺陷诊断')
+    assert.equal(task.planVersion, 2)
+    assert.equal(await readFile(task.plan, 'utf8'), approved)
     const source = await readFile(task.source, 'utf8')
     assert.match(source, /确认时的原文/)
     assert.doesNotMatch(source, /云效已修改/)
     await writeFile(task.discussion, '## 修改方案汇总\n实现说明\n## 影响范围与测试\n验证结果')
     assert.equal((await workflow.preview(cwd, key)).sections.length, 2)
+    const run = createHandler({ home, clientFactory: () => api, publication: workflow })
+    const result = await run({ rawInput: 'preview', agent: { session: { id: sessionId, header: { cwd: worktree } } } })
+    assert.match(result.text, /实现说明/)
   })
 }
 
-test('旧命令绑定可返回原会话并预览已有交付稿', async t => {
+test('旧命令绑定仍可预览已有交付稿', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'dy-legacy-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
   const home = join(cwd, 'state')
@@ -99,12 +262,10 @@ test('旧命令绑定可返回原会话并预览已有交付稿', async t => {
   await writeFile(join(home, digest(sessionId) + '.json'), JSON.stringify({ id: 'issue', reference: 'REQ-2', organization: 'org' }))
   await writeFile(join(folder, 'discussion.md'), '## 修改方案汇总\n已有改动\n## 影响范围与测试\n已有结果')
   const api = { organization: 'org', find: async () => ({ id: 'issue', spaceId: 'project' }) }
-  const workflow = createWorkflow({ home, host: {}, client: () => api })
-  const run = createHandler({ home, startBound: workflow.start, clientFactory: () => api })
-  const result = await run({ rawInput: 'start REQ-2', agent: { session: { id: sessionId, header: { cwd } } } })
+  const run = createHandler({ home, clientFactory: () => api })
+  const result = await run({ rawInput: 'preview', agent: { session: { id: sessionId, header: { cwd } } } })
   assert.equal(result.kind, 'success', result.text)
-  assert.match(result.text, /old-session/)
-  assert.match((await workflow.preview(cwd, { id: 'issue', project: 'project' })).sections[0], /已有改动/)
+  assert.match(result.text, /已有改动/)
 })
 
 test('批量排期保留已成功项，重试只处理失败议题', async t => {
@@ -257,12 +418,12 @@ test('评论预览编辑后第二条失败，重启后只补发未完成评论',
   const comments = []
   let attempts = 0
   const options = {
-    home: join(cwd, 'state'),
+    home: join(cwd, 'state'), branchExists: async () => {},
     host: { create: async () => {}, prompt: async () => {} },
     client: () => ({
       organization: 'org',
       get: async id => ({ id, description: '正文' }),
-      attachments: async () => [],
+      attachments: async () => [], schedule: async () => {},
       comments: async () => comments,
       comment: async (_, content) => {
         if (++attempts === 2) throw new YunxiaoHttpError(422, '模拟发布失败')
@@ -274,7 +435,8 @@ test('评论预览编辑后第二条失败，重启后只补发未完成评论',
   }
   const key = { project: 'project', id: 'issue' }
   let workflow = createWorkflow(options)
-  const { sessionId } = await workflow.start({ cwd, ...key })
+  const input = await addPlannedIssue(workflow, cwd, key)
+  const { sessionId } = await workflow.executePlan(cwd, input, async () => ({ cwd, version: 1, readDraft: () => '# 定稿' }))
   await writeFile(join(cwd, '.dsh', 'yunxiao', digest(sessionId), 'discussion.md'),
     '## 修改方案汇总\n\n原开发文案\n\n## 影响范围与测试\n\n测试文案')
   const draft = await workflow.preview(cwd, key)

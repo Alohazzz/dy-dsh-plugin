@@ -1,8 +1,9 @@
+import { planWritingInstructions, writingSkill } from './writing-skill.mjs'
 import { researchSkill } from './research-skill.ts'
-import { deliveryOptions, mrPreview, mrRepos, submitMr, workspaceRepository, type MrInput } from './merge-request.ts'
+import { deliveryOptions, git, mrPreview, mrRepos, submitMr, workspaceRepository, type MrInput } from './merge-request.ts'
 import { createMrReviews, reviewSessionPrefix } from './mr-review.ts'
 import { issueMaterials } from './issue-materials.ts'
-import { exampleIssues, createResearch } from './research-prototype.ts'
+import { createResearch } from './research-prototype.ts'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -30,10 +31,10 @@ type Context = {
   on(event: 'agent/created', listener: (event: { agent: { id: string } }) => void): void
   tools: { guard(check: (execution: { agent?: { id: string } }) => string | undefined): unknown }
   inject(names: string[], install: (scope: { skills: {
-    register(skill: typeof executionSkill): unknown
+    register(skill: typeof executionSkill | typeof writingSkill): unknown
     registerProvider(factory: ReturnType<typeof createSkillInstallations>['provider']): unknown
   } }) => void): unknown
-  get(name: 'sessionSkillCatalog'): { list(request: { sessionId: string }, signal: AbortSignal): Promise<{ skills: { name: string }[] }> } | undefined
+  get?(name: 'sessionSkillCatalog'): { list(request: { sessionId: string }, signal: AbortSignal): Promise<{ skills: { name: string }[] }> } | undefined
   credentials: CredentialStore
   agents: { get(id: string): object | undefined }
   commands: { register(value: { name: string; description: string; input: { hint: string }; handler: ReturnType<typeof createHandler> }): void }
@@ -97,7 +98,6 @@ async function inBatches<T, R>(items: T[], run: (item: T) => Promise<R>): Promis
 
 export function apply(ctx: Context) {
   const home = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'dy-yunxiao')
-  const recentIssues = new Map<string, Issue>()
   const deadlineFields = new Map<string, string>()
   const settings = createConnectionSettings(ctx.credentials)
   const skillSources = createSkillSources(home)
@@ -109,14 +109,16 @@ export function apply(ctx: Context) {
   ctx.tools.guard(({ agent }) => agent?.id.startsWith(reviewSessionPrefix) ?
     'MR 只读审查会话禁用工具，仅使用宿主提供的 Git 证据。' : undefined)
   ctx.inject(['skills'], scope => {
-    scope.skills.register(executionSkill)
-    scope.skills.register(researchSkill)
+    scope.skills.register(writingSkill)
+    for (const skill of [executionSkill, researchSkill]) {
+      scope.skills.register({ ...skill, content: skill.content + '\n\n' + planWritingInstructions })
+    }
     scope.skills.registerProvider(installations.provider)
   })
   async function hasSessionSkill(sessionId: string, name: string) {
-    const catalog = ctx.get('sessionSkillCatalog')
-    if (!catalog) return false
     try {
+      const catalog = ctx.get?.('sessionSkillCatalog')
+      if (!catalog) return false
       const result = await catalog.list({ sessionId }, AbortSignal.timeout(10_000))
       return result.skills.some(skill => skill.name === name)
     } catch {
@@ -141,26 +143,17 @@ export function apply(ctx: Context) {
     home, client: settings.client,
     host: {
       hasExecutionSkill: sessionId => hasSessionSkill(sessionId, executionSkill.name),
-      create: ({ sessionId, cwd, workspaceId, agentPreset }) => ctx.sessionController.create({
-        sessionId, agentPreset, ...(workspaceId ? { workspaceId } : { cwd }),
-      }),
-      async prompt({ sessionId, requestId, text, permission }) {
-        if (permission) {
-          const owner = await ctx.sessionController.resolveAgent(sessionId)
-          if (!owner.agent || !ctx.permissionPresets?.names.includes(permission)) throw new Error('指定权限不可用')
-          ctx.permissionPresets.set(owner.agent.session, permission)
-        }
-        await ctx.sessionController.prompt({ sessionId, requestId, mode: 'queue', content: [{ type: 'text', text }] },
-          AbortSignal.timeout(60_000))
-      },
+      create: input => ctx.sessionController.create(input),
+      prompt: ({ sessionId, requestId, text }) => ctx.sessionController.prompt(
+        { sessionId, requestId, mode: 'queue', content: [{ type: 'text', text }] }, AbortSignal.timeout(60_000)),
     },
   })
 
   ctx.commands.register({
     name: 'yunxiao',
-    description: '读取、开工、回写和流转云效议题',
-    input: { hint: '<read|start|preview|publish|statuses|transition>' },
-    handler: createHandler({ home, clientFactory: settings.client, startBound: workflow.start, publication: workflow }),
+    description: '读取、回写和流转云效议题',
+    input: { hint: '<read|preview|publish|statuses|transition>' },
+    handler: createHandler({ home, clientFactory: settings.client, publication: workflow }),
   })
 
   function workspace(id: string) {
@@ -246,9 +239,6 @@ export function apply(ctx: Context) {
       const plan = plans.find(plan => plan.members.includes(row.id))
       row.plan = plan?.name
       row.planId = plan?.id
-      const rowKey = JSON.stringify([api.organization, row.project, row.id])
-      recentIssues.set(rowKey, row)
-      if (recentIssues.size > 1000) recentIssues.delete(recentIssues.keys().next().value!)
       if (input.workspaceId) {
         const binding = await workflow.bindingFor(workspace(input.workspaceId).path, row, api.organization)
         if (binding?.dispatched) row.sessionId = binding.sessionId
@@ -262,9 +252,16 @@ export function apply(ctx: Context) {
     const api = await settings.client()
     const item = await api.get(input.id)
     if (projectOf(item) && projectOf(item) !== input.project) throw new Error('议题不属于当前云效项目')
-    const binding = input.workspaceId ? await workflow.bindingFor(workspace(input.workspaceId).path, input, api.organization) : null
-    const materials = await issueMaterials(api, item.id, descriptionOf(item))
-    return { ...summarize(item, input.project), ...materials, sessionId: binding?.dispatched ? binding.sessionId : undefined, preparedSessionId: binding?.prepared && !binding.dispatched ? binding.sessionId : undefined, pendingTarget: (await workflow.pendingTransition(input, api))?.target }
+    const root = input.workspaceId ? workspace(input.workspaceId).path : undefined
+    const [binding, plans, materials, transition] = await Promise.all([
+      root ? workflow.bindingFor(root, input, api.organization) : null,
+      root ? workflow.plans(root, input.project, api.organization) : [],
+      issueMaterials(api, item.id, descriptionOf(item)),
+      workflow.pendingTransition(input, api),
+    ])
+    const plan = plans.find(plan => plan.members.includes(input.id))
+    return { ...summarize(item, input.project), ...materials, plan: plan?.name, planId: plan?.id,
+      sessionId: binding?.dispatched ? binding.sessionId : undefined, pendingTarget: transition?.target }
   }
 
   type Client = Awaited<ReturnType<typeof settings.client>>
@@ -315,26 +312,34 @@ export function apply(ctx: Context) {
       try {
         const item = await api.get(id)
         if (projectOf(item) && projectOf(item) !== input.project) throw new Error('议题不属于当前云效项目')
-        return summarize(item, input.project)
+        const binding = await workflow.bindingFor(planDirectory(input), { project: input.project, id }, api.organization)
+        return { ...summarize(item, input.project), sessionId: binding?.dispatched ? binding.sessionId : undefined,
+          executionVersion: !binding?.dispatched && binding?.planId === plan.id ? binding.planVersion : undefined }
       } catch {
         return { id, reference: id, title: '', owner: '', state: { id: '', name: '' }, url: '', error: '议题读取失败' }
       }
     }), mrState()])
-    return { plan, issues, ...state }
+    return { plan, issues, ...state, executionSupported: true }
   }
 
   const research = createResearch(ctx.sessionController, join(home, 'research'), hasSessionSkill)
+  const researchBatch = (organization: string, input: PlanKey) =>
+    digest(JSON.stringify([organization, input.workspaceId, input.project, input.planId]))
+  async function planCheckout(input: PlanKey, plan: Plan) {
+    const key = plan.repositoryKey || plan.delivery?.key
+    const root = planDirectory(input)
+    const repo = key ? await workspaceRepository(root, key) : root
+    return plan.worktree ? planWorktree(repo, plan.worktree) : repo
+  }
+
   const methods = {
     async planResearch(input: PlanKey & { start?: boolean }) {
       const api = await settings.client()
       const plan = await readPlan(api, input)
-      const batchId = digest(JSON.stringify([api.organization, input.workspaceId, input.project, plan.id]))
+      const batchId = researchBatch(api.organization, input)
       const rows = research.status({ batchId }).filter(row => row.issueId && plan.members.includes(row.issueId))
       if (!input.start) return { batchId, rows }
-      const key = plan.repositoryKey || plan.delivery?.key
-      const root = planDirectory(input)
-      const repo = key ? await workspaceRepository(root, key) : root
-      const cwd = plan.worktree ? await planWorktree(repo, plan.worktree) : repo
+      const cwd = await planCheckout(input, plan)
       const missing = plan.members.filter(id => !rows.some(r => r.issueId === id && (r.status !== 'failed' || r.drafts.length)))
       const inputs = await inBatches(missing, async id => {
         const item = await detail({ ...input, id })
@@ -343,15 +348,16 @@ export function apply(ctx: Context) {
       research.start(cwd, inputs, batchId)
       return { batchId, rows: research.status({ batchId }).filter(row => row.issueId && plan.members.includes(row.issueId)) }
     },
-    async researchStart({ workspaceId, issues }: { workspaceId: string; issues: IssueKey[] }) {
-      if (!Array.isArray(issues) || (issues.length !== 0 && issues.length !== 2)) throw new Error('请选择两个不同议题')
-      if (issues.length && (!workspaceId || issues[0].id === issues[1].id)) throw new Error('请选择工作区和两个不同议题')
-      const cwd = workspaceId ? workspace(workspaceId).path : dirname(import.meta.dirname)
-      const inputs = issues.length ? await Promise.all(issues.map(async key => {
-        const issue = await detail({ ...key, workspaceId })
-        return { title: issue.reference + ' ' + issue.title, text: issue.text }
-      })) : exampleIssues
-      return research.start(cwd, inputs)
+    async executePlanIssue(input: PlanKey & { id: string; version: number }) {
+      const binding = await workflow.executePlan(planDirectory(input), input, async (plan, organization) => {
+        const cwd = await planCheckout(input, plan)
+        if (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], true) !== plan.branch) {
+          throw new Error('请在计划的代码目录检出源分支「' + plan.branch + '」后再执行')
+        }
+        return { cwd, version: input.version,
+          readDraft: () => research.finalizedDraft(researchBatch(organization, input), input.id, input.version) }
+      })
+      return { sessionId: binding.sessionId }
     },
     researchStatus: research.status,
     researchSummaries: research.summaries,
@@ -485,12 +491,10 @@ export function apply(ctx: Context) {
     async saveConnection(input: Parameters<typeof settings.save>[0]) {
       await settings.save(input)
       deadlineFields.clear()
-      recentIssues.clear()
     },
     async clearConnection() {
       await settings.clear()
       deadlineFields.clear()
-      recentIssues.clear()
     },
     async filters({ project }: IssueKey) {
       const values = await (await settings.client()).filters(project)
@@ -501,17 +505,6 @@ export function apply(ctx: Context) {
         .flatMap(field => Array.isArray(field.options) ? field.options : [])
         .map(item => typeof item === 'string' ? item : label(item)).filter(Boolean)
       return { statuses: options(values.statuses), versions: options(values.versions), products: [...new Set<string>(products)] }
-    },
-    async start(input: IssueKey & { workspaceId: string; notes: string; clarify: boolean; preset?: string; permission?: string }) {
-      const target = workspace(input.workspaceId)
-      if (input.permission && !ctx.permissionPresets?.names.includes(input.permission)) throw new Error('指定权限不可用')
-      const row = recentIssues.get(JSON.stringify([(await settings.client()).organization, input.project, input.id]))
-      const result = await workflow.start({
-        id: input.id, project: input.project, cwd: target.path, workspaceId: target.id,
-        preset: input.preset, permission: input.permission, notes: input.notes, clarify: input.clarify,
-        verifiedListItem: row,
-      })
-      return { sessionId: result.sessionId }
     },
     preview(input: IssueKey & { workspaceId: string; regenerate?: boolean }) {
       return workflow.preview(workspace(input.workspaceId).path, input, input.regenerate)
