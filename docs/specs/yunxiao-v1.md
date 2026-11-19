@@ -58,3 +58,13 @@
 ## 依据
 
 [移植清单](../migration-checklist.md) · [Nezha 实机与原型功能对照](../../src/yunxiao-prototype/nezha-baseline.md) · [DSH 插件调研](../dsh-github-research.md) · [界面设计规范](../../Design.md)
+
+## 交付计划与合并请求
+
+工作台沿用 DSH 的顶部模块导航和主题变量。交付计划使用筛选表格和详情页。分支配置、发起和关联沿用插件原生对话框，发起流程复用单仓 Git 预览和确认。窄容器内表格独立横向滚动。
+
+旧计划保留源分支和议题成员，进入详情后补齐一个 Codeup 仓库和目标分支。配置校验所选仓库的本地源分支及远端目标分支。发起时再校验当前检出、提交和 origin。存在精确匹配的开放 MR 时，用户可选中并关联。
+
+关联随本地计划保存。MR 使用 Codeup 仓库 ID 与仓库内编号定位。计划和待审队列打开同一个详情组件，并各自保留返回入口。计划刷新时通过 Codeup 回查合并状态。待审队列显示由当前用户评审且本人尚未评审的请求。人工批准和合并继续在 Codeup 完成。
+
+[交互原型](../../src/yunxiao-prototype/workbench-prototype.html) · [Codeup 列表接口](https://help.aliyun.com/zh/yunxiao/developer-reference/listchangerequests-query-the-list-of-merge-requests) · [Codeup 详情接口](https://help.aliyun.com/zh/yunxiao/developer-reference/getchangerequest-query-merge-request)

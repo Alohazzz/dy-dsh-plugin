@@ -1,3 +1,4 @@
+import { codeupApi } from './codeup.mjs'
 const endpoint = 'https://openapi-rdc.aliyuncs.com'
 
 function segment(value) {
@@ -78,6 +79,7 @@ export function createClient({
     organization,
     project,
     currentUser,
+    codeup: codeupApi(call, organization),
     async projects() {
       const projects = []
       for (let page = 1; ; page++) {

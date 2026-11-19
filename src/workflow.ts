@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { atomicJson, descriptionOf, digest, discussionSections, publishComment, readIssue, readJson, sessionPaths } from './yunxiao.mjs'
 import { createClient, YunxiaoHttpError } from './yunxiao-client.mjs'
+import type { Plan, PlanDelivery } from './contracts.ts'
 
 type Client = ReturnType<typeof createClient>
 type IssueKey = { project: string; id: string }
@@ -41,7 +42,6 @@ type Binding = {
   pendingFiles?: LaunchFiles; snapshotReady?: boolean; firstPrompt?: string
   prepared?: boolean; dispatched?: boolean
 }
-type Plan = { id: string; name: string; branch: string; end: string; members: string[] }
 type Receipt = { id: string; time: string }
 type Publication = { code: string; sections: string[]; receipts: (Receipt | null)[] }
 const locks = new Map<string, Promise<unknown>>()
@@ -308,12 +308,30 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     return await readJson(await planPath(cwd, project, organization)) ?? []
   }
 
-  async function createPlan(cwd: string, project: string, input: Pick<Plan, 'name' | 'branch' | 'end'>) {
+  async function updateDelivery(cwd: string, project: string, organization: string, id: string,
+    update: (plan: Plan) => Promise<PlanDelivery>) {
+    const path = await planPath(cwd, project, organization)
+    return serial(path, async () => {
+      const rows: Plan[] = await readJson(path) ?? []
+      const plan = rows.find(row => row.id === id)
+      if (!plan) throw new Error('当前工作区没有该交付计划')
+      const delivery = await update(plan)
+      if (delivery !== plan.delivery) {
+        plan.delivery = delivery
+        await atomicJson(path, rows)
+      }
+      return delivery
+    })
+  }
+
+  async function createPlan(cwd: string, project: string, input: Pick<Plan, 'name' | 'branch' | 'end'>,
+    repository?: { key: string; directory: string }) {
     if (!input.name?.trim() || input.name.length > 100 || !input.branch?.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(input.end)) {
       throw new Error('请填写计划名称、已有分支和完成日期')
     }
+    const branch = input.branch.trim()
     try {
-      await branchExists(cwd, input.branch)
+      await branchExists(repository?.directory ?? cwd, branch)
     } catch {
       throw new Error('目标工作区找不到该本地分支')
     }
@@ -323,7 +341,8 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
       const all: Plan[] = await readJson(path) ?? []
       const name = input.name.trim()
       if (all.some(plan => plan.name === name)) throw new Error('计划名称已存在')
-      const plan = { name, branch: input.branch, end: input.end, id: randomUUID(), members: [] }
+      const plan: Plan = { name, branch, end: input.end, id: randomUUID(), members: [],
+        ...(repository ? { repositoryKey: repository.key } : {}) }
       await atomicJson(path, [...all, plan])
       return plan
     })
@@ -364,5 +383,5 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     })
   }
 
-  return { start, bindingFor, preview, publish, transition, checkTransition, pendingTransition, plans, createPlan, addToPlan }
+  return { start, bindingFor, preview, publish, transition, checkTransition, pendingTransition, plans, createPlan, addToPlan, updateDelivery }
 }

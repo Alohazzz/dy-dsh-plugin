@@ -9,12 +9,13 @@ def check(page):
         meta=dict(projects=options, workspaces=options, presets=[], permissions=[]),
         filters=dict(statuses=[], products=[], versions=[]),
         search=dict(rows=[row], more=False),
-        detail=dict(**row, text="图片附件", files=[dict(name="sample.svg", url="/sample.svg", image=True)]),
+        detail=dict(**row, body=[dict(text="缺陷描述"), dict(file=0), dict(text="发生频率")],
+               files=[dict(name="sample.svg", url="/sample.svg", image=True), dict(name="普通附件.txt", url="/sample.txt", image=False)]),
     )
     page.route("**/api/dy-yunxiao", lambda r: r.fulfill(json=dict(value=methods[r.request.post_data_json["method"]])))
     page.route("**/sample.svg", lambda r: r.fulfill(content_type="image/svg+xml",
                body='<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="2600"><rect width="100%" height="100%" fill="silver"/></svg>'))
-    page.get_by_role("button", name="云效议题", exact=True).click()
+    page.get_by_role("button", name="研发工作台", exact=True).click()
     page.get_by_role("button", name="预览测试", exact=True).click()
     detail = page.get_by_role("region", name="议题详情")
     for nested in [False, True]:
@@ -23,6 +24,10 @@ def check(page):
             detail.get_by_role("button", name="直接开工").click()
             region = page.get_by_role("dialog", name="直接开工")
             region.get_by_text("查看原文与附件").click()
+        body = region.locator(".dy-yx-description")
+        assert body.locator(":scope > div").all_text_contents()[::2] == ["缺陷描述", "发生频率"]
+        expect(body.locator(":scope > div").nth(1).get_by_role("button", name="预览 sample.svg")).to_be_visible()
+        expect(region.get_by_role("link", name="普通附件.txt")).to_be_visible()
         region.get_by_role("button", name="预览 sample.svg").click()
         viewer = page.get_by_role("dialog", name="图片预览")
         image = viewer.get_by_role("img")

@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>研发工作台 · 交互原型</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: var(--dsw-alias-bg-base, #161618);
+      --surface: var(--dsw-alias-bg-layer-1, #1c1c1f);
+      --raised: var(--dsw-alias-bg-layer-2, #232327);
+      --text: var(--dsw-alias-label-primary, #efeff2);
+      --muted: var(--dsw-alias-label-secondary, #a5a5af);
+      --line: var(--dsw-alias-border-l1, #343439);
+      --accent: var(--dsw-alias-link, #9dbbff);
+      --active: var(--dsw-alias-interactive-bg-active, #262f45);
+      --primary: var(--dsw-alias-button-primary-fill, #adC5ff);
+      --primary-text: var(--dsw-alias-bg-base, #161618);
+      --ok: var(--dsw-alias-state-success-primary, #8bd5a7);
+      --warn: var(--dsw-alias-state-warning-primary, #edc177);
+      font: 14px/1.55 system-ui, "Microsoft YaHei UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--text); background: var(--bg); }
+    body:has(dialog[open]) { overflow: hidden; }
+    h1, h2, h3, p, dl { margin: 0; }
+    h1, h2 { font-size: 23px; font-weight: 680; line-height: 1.35; }
+    h3 { font-size: 15px; line-height: 1.45; }
+    button, input, select, textarea {
+      color: inherit; font: inherit; background: var(--surface);
+      border: 1px solid var(--line); border-radius: 6px; padding: 6px 11px;
+    }
+    button, summary { cursor: pointer; }
+    button:hover { background: var(--raised); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    button:disabled { cursor: default; opacity: .55; }
+    .primary { background: var(--primary); border-color: transparent; color: var(--primary-text); font-weight: 650; }
+    .primary:hover { background: color-mix(in srgb, var(--primary) 86%, white); }
+    .link { padding: 0; border: 0; background: transparent; color: var(--accent); text-align: left; }
+    .link:hover { background: transparent; text-decoration: underline; }
+    .muted, dt, th { color: var(--muted); }
+    .small, dt, th { font-size: 12px; }
+    .stack { display: grid; gap: 16px; }
+    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .spread { justify-content: space-between; }
+    .top { border-bottom: 1px solid var(--line); background: var(--surface); }
+    .frame { width: min(100%, 1440px); margin-inline: auto; padding-inline: clamp(14px, 3vw, 40px); }
+    .top .frame { padding-block: 15px 0; }
+    .top h1 { font-size: 18px; }
+    .nav { margin-top: 11px; gap: 18px; }
+    .tabs { border-bottom: 1px solid var(--line); padding-inline: 14px; }
+    :is(.nav, .tabs) button {
+      color: var(--muted); background: transparent; border: 0;
+      border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 4px;
+    }
+    :is(.nav, .tabs) button:hover { color: var(--text); }
+    :is(.nav, .tabs) button[aria-current] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 650; }
+    main.frame { padding-block: 22px 24px; }
+    .page-head { margin-bottom: 2px; }
+    .page-head h2:focus { outline: none; }
+    .page-head p { margin-top: 5px; }
+    .sheet { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+    .sheet-head { padding: 13px 16px; }
+    .filters { padding: 13px 16px; }
+    .filters input { width: min(16rem, 100%); }
+    .filters label { display: flex; align-items: center; gap: 7px; }
+    .scroll { overflow-x: auto; border-radius: 0 0 8px 8px; }
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th { background: var(--raised); font-weight: 600; white-space: nowrap; }
+    th, td { padding: 11px 16px; border-top: 1px solid var(--line); vertical-align: middle; }
+    td .small { display: block; margin-top: 3px; }
+    .number { text-align: right; font-variant-numeric: tabular-nums; }
+    .nowrap { white-space: nowrap; }
+    .count { padding: 9px 16px; border-top: 1px solid var(--line); }
+    .empty { padding-block: 30px; text-align: center; color: var(--muted); }
+    .status {
+      display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+      color: var(--muted); background: var(--raised); padding: 2px 8px; border-radius: 5px; width: fit-content;
+    }
+    .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .status[data-state="待审核"] { color: var(--warn); }
+    .status:is([data-state="已合并"], [data-state="代码已合并"], [data-state="已完成"]) { color: var(--ok); }
+    .status:is([data-state="开发中"], [data-state="待验证"]) { color: var(--accent); }
+    .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 12px 22px; padding: 14px 16px; }
+    .branch-facts { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr); border-top: 1px solid var(--line); }
+    dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+    .branches { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+    .branch { color: var(--accent); background: var(--active); font: 12px/1.7 Consolas, monospace; padding: 2px 6px; border-radius: 4px; overflow-wrap: anywhere; }
+    .padded { padding: 14px 16px; }
+    .crumb { gap: 8px; }
+    .message { padding: 9px 12px; background: var(--active); border: 1px solid var(--line); border-radius: 6px; }
+    .demo { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 11px; }
+    .demo summary { width: fit-content; }
+    .demo .row { margin-block: 9px; }
+    .demo [aria-pressed="true"] { background: var(--active); }
+    dialog {
+      position: fixed; inset: 0 0 0 auto; margin: 0; width: min(100%, 520px); max-width: none;
+      height: 100%; max-height: 100%; padding: 0; color: var(--text);
+      background: var(--surface); border: 0; border-inline-start: 1px solid var(--line);
+    }
+    dialog::backdrop { background: #0008; }
+    dialog form { height: 100%; display: flex; flex-direction: column; }
+    .drawer-head, .drawer-body, .drawer-foot { padding: 15px 18px; }
+    .drawer-head { border-bottom: 1px solid var(--line); }
+    .drawer-body { flex: 1; overflow: auto; align-content: start; }
+    .drawer-foot { border-top: 1px solid var(--line); justify-content: flex-end; }
+    .field { display: grid; gap: 5px; }
+    textarea { resize: vertical; min-height: 85px; }
+    .candidate { display: flex; align-items: flex-start; gap: 9px; border: 1px solid var(--line); border-radius: 6px; padding: 11px; cursor: pointer; }
+    .candidate:has(:checked) { background: var(--active); border-color: var(--accent); }
+    @media (max-width: 640px) {
+      th, td { padding-inline: 10px; }
+      .wide-table { min-width: 670px; }
+      .filters { align-items: start; }
+      .nav { gap: 12px; }
+      .branch-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .branch-facts > :nth-child(2) { grid-row: 2; grid-column: 1 / -1; }
+      main.frame { padding-top: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div class="frame">
+      <div class="row spread"><h1>研发工作台</h1><span class="small muted">交互原型 · 示例数据</span></div>
+      <nav id="navigation" class="row nav" aria-label="工作台模块"></nav>
+    </div>
+  </div>
+  <main class="frame">
+    <div id="page" class="stack"></div>
+    <details id="demo" class="demo">
+      <summary class="muted small">演示路径</summary>
+      <div class="row" id="scenarios" aria-label="选择演示路径"></div>
+      <p class="muted small" id="scenario-note"></p>
+      <div class="row" id="steps"></div>
+    </details>
+  </main>
+  <dialog id="drawer" aria-labelledby="drawer-title"></dialog>
+
+  <script>
+    const mock = {
+      plans: [
+        { id: 'export', name: '结算明细导出改进', project: 'HIS', workspace: 'HIS', due: '2026-11-24',
+          repo: 'his-billing', source: 'delivery/billing-export', target: 'release/2.0', sha: '9c42e18', push: true,
+          issues: [
+            ['HSP-2086', '结算明细导出时保留筛选条件', '苏一', '开发中'],
+            ['HSP-2088', '补充结算导出日期范围校验', '王宁', '待验证']
+          ], commits: ['保留结算导出的筛选条件', '补充导出日期范围校验'] },
+        { id: 'term', name: '术语目录缓存修复', project: 'HIS', workspace: 'HIS', due: '2026-11-26',
+          repo: 'his-term', source: 'fix/term-cache', target: 'release/2.0', sha: '6f204d3',
+          issues: [['HSP-2092', '修复术语目录缓存刷新', '赵敏', '待验证']], commits: ['刷新术语目录缓存'] },
+        { id: 'supply', name: '内配耗材入库验收', project: '消毒供应系统', workspace: '供应链', due: '2026-11-28',
+          repo: 'supply', source: 'delivery/stock-acceptance', target: 'main', sha: '382fd74', mr: 142,
+          issues: [['KGNB-1', '内部耗材入库、确认验收功能开发', '徐友腾', '开发中']], commits: ['补充入库确认与验收记录'] },
+        { id: 'schedule', name: '跨日排班时间修正', project: 'HIS', workspace: 'HIS', due: '2026-11-18',
+          repo: 'his-schedule', source: 'fix/overnight-shift', target: 'release/2.0', sha: '2e91a07', mr: 137,
+          issues: [['HSP-2085', '修复跨日排班结束时间显示异常', '苏一', '已完成']], commits: ['修正跨日排班结束时间'] },
+        { id: 'settlement', name: '结算通知文案调整', project: 'HIS', workspace: 'HIS', due: '2026-12-02',
+          repo: 'his-billing', source: 'delivery/billing-notice', target: '',
+          issues: [['HSP-2104', '统一结算通知提示语', '王宁', '待开发']], commits: [] }
+      ],
+      mrs: [
+        { id: 142, title: '支持内配耗材入库和验收确认', repo: 'supply', source: 'delivery/stock-acceptance', target: 'main',
+          sha: '382fd74', base: '60ab7c1', author: '徐友腾', reviewer: '苏一', status: '待审核', body: '增加入库确认与验收记录，便于核对耗材入库状态。', commits: ['补充入库确认与验收记录'], report: true },
+        { id: 141, title: '刷新术语目录缓存', repo: 'his-term', source: 'fix/term-cache', target: 'release/2.0',
+          sha: '6f204d3', base: '319aff0', author: '赵敏', reviewer: '苏一', status: '待审核', body: '术语更新后刷新目录缓存。', commits: ['刷新术语目录缓存'] },
+        { id: 140, title: '补充术语查询日志', repo: 'his-term', source: 'fix/term-cache', target: 'main',
+          sha: 'babf138', base: 'cf96a32', author: '赵敏', reviewer: '苏一', status: '待审核', body: '补充诊断日志。', commits: ['记录术语同步结果'] },
+        { id: 137, title: '修正跨日排班时间', repo: 'his-schedule', source: 'fix/overnight-shift', target: 'release/2.0',
+          sha: '2e91a07', base: 'f96571d', author: '苏一', reviewer: '王宁', status: '已合并', body: '正确显示次日结束时间。', commits: ['修正跨日排班结束时间'] }
+      ],
+      nextMR: 143
+    };
+
+    const findMR = (data, id) => data.mrs.find(mr => mr.id === id);
+    const matchingMRs = (data, plan) => data.mrs.filter(mr =>
+      mr.status === '待审核' && mr.repo === plan.repo && mr.source === plan.source && mr.target === plan.target);
+    const planStatus = (data, plan) => {
+      const mr = findMR(data, plan.mr);
+      if (mr?.status === '已合并') return '代码已合并';
+      if (mr) return mr.status;
+      return plan.target ? '未提 MR' : '分支待配置';
+    };
+    function applyMR(data, planId, input) {
+      const plan = data.plans.find(row => row.id === planId);
+      if (!plan?.target || plan.mr) return null;
+      const matches = matchingMRs(data, plan);
+      let mr = matches.find(row => row.id === input.id);
+      if (!mr) {
+        if (matches.length || !input.title?.trim()) return null;
+        mr = {
+          id: data.nextMR, title: input.title.trim(), body: input.body.trim(), repo: plan.repo,
+          source: plan.source, target: plan.target, sha: plan.sha, base: '319aff0',
+          status: '待审核', author: '苏一', reviewer: '王宁', commits: plan.commits
+        };
+      }
+      return {
+        id: mr.id,
+        data: {
+          plans: data.plans.map(row => row.id === planId ? { ...row, mr: mr.id, push: false } : row),
+          mrs: matches.length ? data.mrs : [mr, ...data.mrs],
+          nextMR: matches.length ? data.nextMR : data.nextMR + 1
+        }
+      };
+    }
+  </script>
+  <script>
+    const $ = id => document.getElementById(id);
+    const escape = value => String(value ?? '').replace(/[&<>"']/g, ch =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+    const modules = { issues: '云效议题', plans: '交付计划', requests: '合并请求', skills: '技能管理' };
+    const queues = { mine: '我的发起', review: '待我审核', all: '仓库内全部' };
+    const status = value => `<span class="status" data-state="${escape(value)}">${escape(value)}</span>`;
+    const branch = value => `<code class="branch">${escape(value)}</code>`;
+    const branchPair = row => `<span class="branches">${branch(row.source)} <span class="muted">→</span> ${row.target ? branch(row.target) : '<span class="muted">待配置</span>'}</span>`;
+    const button = (label, action, data = '', style = '', extra = '') =>
+      `<button type="button" class="${style}" data-action="${action}" data-value="${escape(data)}" ${extra}>${escape(label)}</button>`;
+    const heading = (title, caption = '', action = '') =>
+      `<div class="page-head row spread"><div><h2 tabindex="-1">${escape(title)}</h2>${caption ? `<p class="muted">${escape(caption)}</p>` : ''}</div>${action}</div>`;
+    const table = (heads, rows, empty, wide = true) => `<div class="scroll" tabindex="0" aria-label="表格内容"><table class="${wide ? 'wide-table' : ''}"><thead><tr>${heads.map(head =>
+      `<th scope="col"${head === '议题数' ? ' class="number"' : ''}>${escape(head)}</th>`).join('')}</tr></thead><tbody>${rows ||
+      `<tr><td class="empty" colspan="${heads.length}">${escape(empty)}</td></tr>`}</tbody></table></div>`;
+    const options = (values, current) => values.map(value =>
+      `<option${value === current ? ' selected' : ''}>${escape(value)}</option>`).join('');
+
+    let data = structuredClone(mock);
+    const filters = { project: '全部项目', workspace: '全部工作区', status: '全部进度', query: '', repo: '全部仓库' };
+    let flash = '';
+    let walkthrough = '';
+    let step = 0;
+    let drawerPlan = null;
+    let drawerMode = '';
+    let drawerReturnFocus = '';
+    function route() {
+      const [area, item, source, tab] = (location.hash.slice(1) || 'plans').split('/');
+      return { area: modules[area] ? area : 'plans', item, source, tab };
+    }
+    function navigate(path, message = '') {
+      flash = message;
+      if (location.hash !== '#' + path) history.pushState(null, '', '#' + path);
+      draw();
+      $('page').querySelector('h2')?.focus({ preventScroll: true });
+    }
+
+    function planRows() {
+      const matches = data.plans.filter(plan =>
+        (filters.project === '全部项目' || plan.project === filters.project) &&
+        (filters.workspace === '全部工作区' || plan.workspace === filters.workspace) &&
+        (filters.status === '全部进度' || planStatus(data, plan) === filters.status) &&
+        [plan.name, plan.repo, plan.source, ...plan.issues.map(issue => issue[0])]
+          .some(text => text.toLowerCase().includes(filters.query.trim().toLowerCase())));
+      $('plan-results').innerHTML = table(['交付计划', '仓库 / 交付分支', '计划完成日', '议题数', '代码交付'], matches.map(plan =>
+        `<tr><td>${button(plan.name, 'go', 'plans/' + plan.id, 'link')}<span class="small muted">${escape(plan.project)} · ${escape(plan.workspace)} 工作区</span></td>
+          <td><div class="small muted">${escape(plan.repo)}</div>${branchPair(plan)}</td><td class="nowrap">${escape(plan.due)}</td>
+          <td class="number">${plan.issues.length}</td><td>${status(planStatus(data, plan))}</td></tr>`).join(''),
+        '没有符合条件的交付计划') + `<div class="count muted small" role="status">共 ${matches.length} 个计划</div>`;
+    }
+    function plansPage() {
+      return heading('交付计划') + `<section class="sheet">
+        <div class="filters row" aria-label="计划筛选">
+          <label class="small muted">云效项目 <select data-filter="project">${options(['全部项目', 'HIS', '消毒供应系统'], filters.project)}</select></label>
+          <label class="small muted">目标工作区 <select data-filter="workspace">${options(['全部工作区', 'HIS', '供应链'], filters.workspace)}</select></label>
+          <label class="small muted">代码交付 <select data-filter="status">${options(['全部进度', '未提 MR', '待审核', '代码已合并', '分支待配置'], filters.status)}</select></label>
+          <input type="search" data-filter="query" aria-label="搜索计划、仓库、分支或议题编号" placeholder="搜索计划或议题编号" value="${escape(filters.query)}">
+        </div><div id="plan-results"></div></section>`;
+    }
+    function issueTable(issues, showPlan = false) {
+      return table(['议题编号', '标题', '负责人', '云效状态', ...(showPlan ? ['交付计划'] : [])],
+        issues.map(([id, title, owner, phase, plan]) => `<tr><td class="nowrap">${escape(id)}</td><td>${escape(title)}</td>
+          <td>${escape(owner)}</td><td>${status(phase)}</td>
+          ${showPlan ? `<td>${button(plan.name, 'go', 'plans/' + plan.id, 'link')}</td>` : ''}</tr>`).join(''), '暂无议题', showPlan);
+    }
+    function planPage(plan) {
+      const mr = findMR(data, plan.mr);
+      const candidates = matchingMRs(data, plan);
+      const entry = mr ? button('查看 MR !' + mr.id, 'go', 'requests/' + mr.id + '/plan-' + plan.id, 'primary')
+        : plan.target ? button(candidates.length ? '关联已有 MR' : '发起合并请求', 'drawer', plan.id, 'primary')
+        : '';
+      const hint = mr ? `已关联 Codeup MR !${mr.id}。` : !plan.target ? '请补齐目标分支，再发起或关联 MR。'
+        : candidates.length ? '发现同一仓库、源分支和目标分支的开放 MR。' : '当前没有匹配的开放 MR。';
+      return `<div class="row crumb muted small">${button('交付计划', 'go', 'plans', 'link')}<span aria-hidden="true">/</span>${escape(plan.name)}</div>
+        ${heading(plan.name, '', status(planStatus(data, plan)))}
+        <dl class="facts sheet"><div><dt>云效项目</dt><dd>${escape(plan.project)}</dd></div>
+          <div><dt>目标工作区</dt><dd>${escape(plan.workspace)}</dd></div>
+          <div><dt>计划完成日</dt><dd>${escape(plan.due)}</dd></div>
+          <div><dt>议题数</dt><dd>${plan.issues.length} 条</dd></div></dl>
+        <section class="sheet"><div class="sheet-head row spread"><h3>交付分支</h3>${entry}</div>
+          <dl class="facts branch-facts"><div><dt>仓库</dt><dd>${escape(plan.repo)}</dd></div>
+            <div><dt>源分支 → 目标分支</dt><dd>${branchPair(plan)}</dd></div>
+            <div><dt>关联 MR</dt><dd>${mr ? `!${mr.id}` : '—'}</dd></div></dl>
+          <p class="count muted small">${escape(hint)}</p></section>
+        <section class="sheet"><div class="sheet-head row"><h3>计划议题</h3><span class="muted small">${plan.issues.length} 条</span></div>
+          ${issueTable(plan.issues)}</section>`;
+    }
+
+    function requestsPage(queue) {
+      const visible = data.mrs.filter(mr =>
+        (queue === 'all' || (queue === 'mine' ? mr.author === '苏一' : mr.reviewer === '苏一' && mr.status === '待审核')) &&
+        (filters.repo === '全部仓库' || mr.repo === filters.repo));
+      const reviewCount = data.mrs.filter(mr => mr.reviewer === '苏一' && mr.status === '待审核').length;
+      const rows = visible.map(mr => {
+        const plan = data.plans.find(row => row.mr === mr.id);
+        return `<tr><td>${button('!' + mr.id + ' ' + mr.title, 'go', 'requests/' + mr.id + '/' + queue, 'link')}
+          <span class="small muted">${escape(mr.repo)}</span></td><td>${branchPair(mr)}</td><td>${escape(mr.author)}</td>
+          <td>${plan ? button(plan.name, 'go', 'plans/' + plan.id, 'link') : '—'}</td>
+          <td>${status(mr.status)}</td></tr>`;
+      }).join('');
+      return heading('合并请求', 'Codeup · 当前用户 苏一') + `<section class="sheet">
+        <nav class="row tabs" aria-label="合并请求视图">${Object.entries(queues).map(([key, label]) =>
+          button(key === 'review' ? `${label} · ${reviewCount}` : label, 'go', 'requests/' + key, '', key === queue ? 'aria-current="page"' : '')).join('')}</nav>
+        <div class="filters row"><label class="small muted">仓库 <select data-filter="repo">${options(['全部仓库', ...new Set(data.mrs.map(mr => mr.repo))], filters.repo)}</select></label></div>
+        ${table(['合并请求', '源分支 → 目标分支', '发起人', '关联计划', '状态'], rows,
+          queue === 'review' ? '没有符合条件的待审 MR' : '没有符合条件的合并请求')}
+        <div class="count muted small">共 ${visible.length} 个合并请求</div></section>`;
+    }
+    function requestPage(mr, source, tab) {
+      const plan = data.plans.find(row => row.mr === mr.id);
+      const fromPlan = source?.startsWith('plan-') && plan?.id === source.slice(5);
+      const origin = fromPlan ? 'plans/' + plan.id : 'requests/' + (queues[source] ? source : 'mine');
+      const trail = fromPlan
+        ? `${button('交付计划', 'go', 'plans', 'link')} / ${button(plan.name, 'go', origin, 'link')}`
+        : `${button('合并请求', 'go', 'requests/mine', 'link')} / ${button(queues[source] || '我的发起', 'go', origin, 'link')}`;
+      const views = { overview: '概览', commits: '提交', report: 'AI 审查报告' };
+      const current = views[tab] ? tab : 'overview';
+      let content = `<div class="padded stack"><div><h3>变更说明</h3><p>${escape(mr.body || '暂无变更说明')}</p></div>
+          <div><h3>关联计划</h3>${plan ? button(plan.name, 'go', 'plans/' + plan.id, 'link') : '<p class="muted">尚未关联交付计划</p>'}</div></div>
+        ${plan ? issueTable(plan.issues) : ''}`;
+      if (current === 'commits') content = `<div class="padded"><h3>${mr.commits.length} 个提交</h3><ul>${mr.commits.map(title => `<li>${escape(title)}</li>`).join('')}</ul></div>`;
+      if (current === 'report') content = mr.report
+        ? `<div class="padded stack"><div class="row spread"><h3>AI 审查报告</h3><span class="muted small">示例报告</span></div>
+            <p class="muted">源提交 ${branch(mr.sha)} · 审查基准 ${branch(mr.base)}</p>
+            <p>建议人工核对验收确认后的状态流转和重复提交场景。</p></div>`
+        : '<div class="padded empty">当前提交暂无 AI 审查报告</div>';
+      return `<div class="row crumb muted small">${trail} / !${mr.id}</div>
+        ${heading('!' + mr.id + ' ' + mr.title, mr.repo, status(mr.status))}
+        <dl class="facts sheet"><div><dt>分支</dt><dd>${branchPair(mr)}</dd></div><div><dt>发起人</dt><dd>${escape(mr.author)}</dd></div>
+          <div><dt>审核人</dt><dd>${escape(mr.reviewer)}</dd></div><div><dt>源提交</dt><dd>${branch(mr.sha)}</dd></div></dl>
+        <section class="sheet"><nav class="row tabs" aria-label="合并请求详情">${Object.entries(views).map(([key, label]) =>
+          button(label, 'go', 'requests/' + mr.id + '/' + (source || 'mine') + '/' + key, '', key === current ? 'aria-current="page"' : '')).join('')}</nav>
+          ${content}</section>
+        <div class="row">${button(fromPlan ? '返回计划' : '返回' + (queues[source] || '我的发起'), 'go', origin)}
+          <span class="muted small">人工批准和合并在 Codeup 完成。</span></div>`;
+    }
+
+    function drawerDetails(plan, mode) {
+      const candidates = matchingMRs(data, plan);
+      const linking = mode === 'link';
+      const fields = linking ? `<div class="stack">
+        <p>选择与计划分支匹配的开放 MR。</p>
+        ${candidates.map(mr => `<label class="candidate"><input type="radio" name="candidate" value="${mr.id}" required ${candidates.length === 1 ? 'checked' : ''}>
+          <span><strong>!${mr.id} ${escape(mr.title)}</strong><br><span class="muted small">${escape(mr.author)} · ${escape(mr.status)} · ${escape(mr.sha)}</span></span></label>`).join('')}
+        </div>` : `<div class="stack">
+          <label class="field">合并请求标题 <input name="title" value="${escape(plan.name)}" maxlength="256" required></label>
+          <label class="field">变更说明（选填） <textarea name="body" rows="3"></textarea></label>
+          <div class="message"><strong>${plan.push ? '待推送的提交' : '源分支已同步'}</strong>
+            <ul>${plan.commits.map(title => `<li>${escape(title)}</li>`).join('')}</ul>
+            ${plan.push ? '<p class="small">确认后先推送源分支，再创建 MR。</p>' : ''}</div>
+        </div>`;
+      return `<form><div class="drawer-head row spread"><h3 id="drawer-title">${linking ? '关联已有 MR' : '发起合并请求'}</h3>
+        ${button('关闭', 'close', '', '', 'aria-label="关闭抽屉"')}</div>
+        <div class="drawer-body stack"><dl class="facts sheet"><div><dt>交付计划</dt><dd>${escape(plan.name)}</dd></div>
+          <div><dt>Codeup 仓库</dt><dd>${escape(plan.repo)}</dd></div>
+          <div><dt>源分支</dt><dd>${branch(plan.source)}</dd></div><div><dt>目标分支</dt><dd>${branch(plan.target)}</dd></div></dl>
+          ${fields}</div>
+        <div class="drawer-foot row">${button('取消', 'close')}
+          <button class="primary" type="submit">${linking ? '确认关联' : plan.push ? '推送并创建 MR' : '创建 MR'}</button></div></form>`;
+    }
+    function openDrawer(id) {
+      const plan = data.plans.find(row => row.id === id);
+      if (!plan?.target || plan.mr) return;
+      drawerPlan = plan.id;
+      drawerMode = matchingMRs(data, plan).length ? 'link' : 'create';
+      drawerReturnFocus = id;
+      $('drawer').innerHTML = drawerDetails(plan, drawerMode);
+      $('drawer').showModal();
+      const focus = drawerMode === 'create' ? '[name="title"]' : '[name="candidate"]';
+      $('drawer').querySelector(focus)?.focus();
+    }
+    function saveDrawer() {
+      const form = new FormData($('drawer').querySelector('form'));
+      const result = applyMR(data, drawerPlan, drawerMode === 'link'
+        ? { id: Number(form.get('candidate')) }
+        : { title: String(form.get('title')), body: String(form.get('body')) });
+      if (!result) return;
+      data = result.data;
+      const verb = drawerMode === 'link' ? '已关联' : '已创建';
+      const planId = drawerPlan;
+      $('drawer').close();
+      navigate('plans/' + planId, verb + ' MR !' + result.id + '。');
+      $('page').querySelector('.sheet-head .primary')?.focus();
+    }
+
+    const scenarios = {
+      create: {
+        name: '从计划发起 MR',
+        note: '结算计划还没有开放 MR。确认后返回计划，查看已关联的请求。',
+        steps: [['打开结算计划', () => navigate('plans/export')], ['预览分支和提交', () => openDrawer('export')]]
+      },
+      link: {
+        name: '关联已有 MR',
+        note: '术语仓库已有两个开放 MR。只有同一目标分支的 !141 可以关联。',
+        steps: [['打开术语计划', () => navigate('plans/term')], ['核对可关联的 MR', () => openDrawer('term')]]
+      },
+      review: {
+        name: '从待我审核查看同一 MR',
+        note: '供应链计划已关联 !142。先从计划打开，再从待我审核打开同一条请求。',
+        steps: [['从计划进入 !142', () => navigate('requests/142/plan-supply')],
+          ['打开待我审核', () => navigate('requests/review')], ['从待审队列进入 !142', () => navigate('requests/142/review')]]
+      }
+    };
+    function drawScenarios() {
+      $('scenarios').innerHTML = Object.entries(scenarios).map(([key, scenario]) =>
+        button(scenario.name, 'walk', key, '', `aria-pressed="${walkthrough === key}"`)).join('');
+      const scenario = scenarios[walkthrough];
+      $('scenario-note').textContent = scenario?.note || '可直接使用上方四个入口，也可按路径体验。选择演示路径会重置示例数据。';
+      $('steps').innerHTML = scenario?.steps[step] ? button(scenario.steps[step][0], 'step') : '';
+    }
+    function draw() {
+      const { area, item, source, tab } = route();
+      $('navigation').innerHTML = Object.entries(modules).map(([key, label]) => button(label, 'go',
+        key === 'requests' ? 'requests/mine' : key, '', key === area ? 'aria-current="page"' : '')).join('');
+      let body;
+      if (area === 'plans') {
+        const plan = data.plans.find(row => row.id === item);
+        body = plan ? planPage(plan) : plansPage();
+      } else if (area === 'requests') {
+        const mr = findMR(data, Number(item));
+        body = mr ? requestPage(mr, source, tab) : requestsPage(queues[item] ? item : 'mine');
+      } else if (area === 'issues') {
+        body = heading('云效议题', '从议题查看所属交付计划。') + `<section class="sheet">
+          ${issueTable(data.plans.flatMap(plan => plan.issues.map(issue => [...issue, plan])), true)}</section>`;
+      } else {
+        body = heading('技能管理', '公司技能仓库示例') + `<section class="sheet">${table(['技能', '来源'],
+          '<tr><td>云效议题执行</td><td>公司技能仓库</td></tr><tr><td>合并代码审查</td><td>公司技能仓库</td></tr>', '', false)}</section>`;
+      }
+      $('page').innerHTML = (flash ? `<p class="message" role="status">${escape(flash)}</p>` : '') + body;
+      if ($('plan-results')) planRows();
+      drawScenarios();
+    }
+    document.body.addEventListener('click', event => {
+      const target = event.target.closest('button[data-action]');
+      if (!target) return;
+      const { action, value } = target.dataset;
+      if (action === 'go') navigate(value);
+      if (action === 'drawer') openDrawer(value);
+      if (action === 'close') $('drawer').close();
+      if (action === 'walk') {
+        data = structuredClone(mock);
+        walkthrough = value;
+        step = 0;
+        Object.assign(filters, { project: '全部项目', workspace: '全部工作区', status: '全部进度', query: '', repo: '全部仓库' });
+        navigate('plans');
+      }
+      if (action === 'step') {
+        const [, next] = scenarios[walkthrough].steps[step++];
+        next();
+        drawScenarios();
+      }
+    });
+    $('page').addEventListener('input', event => {
+      const field = event.target.dataset.filter;
+      if (!field) return;
+      filters[field] = event.target.value;
+      if (field === 'repo') {
+        draw();
+        $('page').querySelector('[data-filter="repo"]').focus();
+      } else {
+        planRows();
+      }
+    });
+    $('drawer').addEventListener('submit', event => {
+      event.preventDefault();
+      saveDrawer();
+    });
+    $('drawer').addEventListener('close', () => {
+      const focus = $('page').querySelector(`[data-action="drawer"][data-value="${drawerReturnFocus}"]`);
+      focus?.focus();
+    });
+    window.addEventListener('popstate', () => {
+      if ($('drawer').open) $('drawer').close();
+      flash = '';
+      draw();
+    });
+    draw();
+  </script>
+</body>
+</html>

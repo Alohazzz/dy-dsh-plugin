@@ -32,7 +32,7 @@ const index = {
   title: 'DY DSH 插件',
   plugins: versions.length ? [{
     name: manifest.name,
-    title: '云效议题',
+    title: '研发工作台',
     description: manifest.description,
     repository: { url: manifest.repository.url.replace(/^git\+/, '').replace(/\.git$/, '') },
     versions,

@@ -1,4 +1,4 @@
-# 云效插件快速调试
+# 研发工作台快速调试
 
 日常开发用 Desktop 自带的 CLI 启动独立 Web 实例，通过一次性 `--patch` 直接加载当前工作区的 `dist/host.js`。这样可以用真实的 DSH 插槽、连接和 API 验证面板，日常迭代省去制作 tgz、重装插件和重启 Desktop 的步骤。以下命令适用于 Windows PowerShell、Node.js 24 及本机验证的 DSH `0.2.2-rc.3`。[官方本地插件教程](https://deepseek-harness.github.io/deepseek-harness/develop/basic/) · [项目入口与版本约束](../package.json)
 
@@ -22,7 +22,34 @@ Set-Content -LiteralPath $patch -Encoding utf8 -Value "- insert:`n    - id: dy-y
 & $cli web --patch $patch --host 127.0.0.1 --port 18744
 ```
 
-从 CLI 打开的浏览器页面进入「云效议题」。开发实例有自己的 profile 和插件数据。这个仓库的发行补丁按包名查找已安装依赖，开发补丁则指向刚生成的文件。DSH 根据该文件所属的包读取 `dsh.client` 和 `exports["./client"]`，让页面加载同一工作区的 `dist/client.js`。本机 PATH 中的 `dsh` 实测为 `0.1.5-rc.2`，因此命令里指定了 Desktop 内置 CLI。[发行补丁](../cordis.patch.yml) · [rc.3 客户端模块发现](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.3/docs/subsystems/client-modules.zh.md)
+从 CLI 打开的浏览器页面进入「研发工作台」，再切换到要验证的模块。开发实例有自己的 profile 和插件数据。这个仓库的发行补丁按包名查找已安装依赖，开发补丁则指向刚生成的文件。DSH 根据该文件所属的包读取 `dsh.client` 和 `exports["./client"]`，让页面加载同一工作区的 `dist/client.js`。本机 PATH 中的 `dsh` 实测为 `0.1.5-rc.2`，因此命令里指定了 Desktop 内置 CLI。[发行补丁](../cordis.patch.yml) · [rc.3 客户端模块发现](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.3/docs/subsystems/client-modules.zh.md)
+
+在隔离实例中验证工作台导航和本地技能源操作时，可使用现有运行器。
+
+```powershell
+$runner = Join-Path $env:USERPROFILE '.codex/skills/dsh-plugin-test/scripts/run.py'
+python -X utf8 $runner --project . --scenario test/workbench.py
+```
+
+项目与 .dsh Agent 的分发验收在隔离实例中创建两个项目和三个会话，验证项目范围、跨项目发现、读取说明、执行示例脚本及卸载。追加测试宿主时，将夹具复制到临时目录，使它与工作台分别作为宿主插件解析。
+
+```powershell
+$runner = Join-Path $env:USERPROFILE '.codex/skills/dsh-plugin-test/scripts/run.py'
+$temp = Join-Path ([IO.Path]::GetTempPath()) ('dy-skill-test-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $temp | Out-Null
+$fixture = Join-Path $temp 'fixture.mjs'
+$patch = Join-Path $temp 'test.yml'
+try {
+  Copy-Item test/skill-distribution-fixture.mjs $fixture
+  $hostEntry = (Resolve-Path 'dist/host.js').Path.Replace('\','/')
+  $fixtureEntry = $fixture.Replace('\','/')
+  [IO.File]::WriteAllText($patch, "- insert:`n    - id: dy-yunxiao`n      name: '$hostEntry'`n    - id: skill-distribution-fixture`n      name: '$fixtureEntry'`n")
+  python -X utf8 $runner --project . --patch $patch --scenario test/skill-distribution.py
+} finally {
+  Remove-Item -LiteralPath $fixture,$patch
+  Remove-Item -LiteralPath $temp
+}
+```
 
 ## 根据改动选择最短反馈路径
 

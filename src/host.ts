@@ -1,18 +1,28 @@
+import { deliveryOptions, mrPreview, mrRepos, submitMr, workspaceRepository, type MrInput } from './merge-request.ts'
+import { issueMaterials } from './issue-materials.ts'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createConnectionSettings, type CredentialStore } from './connection-settings.ts'
 import { createHandler, descriptionOf } from './yunxiao.mjs'
 import { createWorkflow, executionSkill, label, projectOf } from './workflow.ts'
-import type { Details, Issue, IssueKey, Meta, Option, Search } from './contracts.ts'
+import type { Details, Issue, IssueKey, Meta, MrRef, Option, Plan, PlanDetails, PlanKey, PlanRow, Search } from './contracts.ts'
+import { createSkillSources } from './skill-sources.ts'
+import { createSkillInstallations, skillProjectRoot } from './skill-installations.ts'
+import { dshSkillTarget, type SkillSourceInput, type SkillTarget } from './skill-catalog.ts'
 
 export const name = 'dy-yunxiao'
-export const inject = ['commands', 'connection', 'workspaceRegistry', 'sessionController', 'agentPresets', 'permissionPresets', 'credentials']
+export const inject = ['commands', 'connection', 'workspaceRegistry', 'sessionController', 'agentPresets', 'permissionPresets', 'credentials', 'agents']
 type Workspace = { id: string; path: string; title: string }
 type Context = {
-  inject(names: string[], install: (scope: { skills: { register(skill: typeof executionSkill): unknown } }) => void): unknown
+  emit(event: 'plugin-manager/changed', change: { reason: 'plugin' }): void
+  inject(names: string[], install: (scope: { skills: {
+    register(skill: typeof executionSkill): unknown
+    registerProvider(factory: ReturnType<typeof createSkillInstallations>['provider']): unknown
+  } }) => void): unknown
   get(name: 'sessionSkillCatalog'): { list(request: { sessionId: string }, signal: AbortSignal): Promise<{ skills: { name: string }[] }> } | undefined
   credentials: CredentialStore
+  agents: { get(id: string): object | undefined }
   commands: { register(value: { name: string; description: string; input: { hint: string }; handler: ReturnType<typeof createHandler> }): void }
   connection: { fetch: { register(route: {
     path: string; methods: ('GET' | 'HEAD' | 'POST')[]; requestBody: 'buffered'
@@ -30,15 +40,6 @@ type Context = {
 
 function options(items: { id: string; name?: string; displayName?: string }[]): Option[] {
   return items.filter(row => row.id).map(row => ({ id: row.id, name: label(row) }))
-}
-
-function webUrl(value: unknown) {
-  if (typeof value !== 'string') return ''
-  try {
-    return new URL(value).protocol === 'https:' ? value : ''
-  } catch {
-    return ''
-  }
 }
 
 type Field = { fieldName?: string; values?: { displayValue?: string; value?: string }[] }
@@ -73,12 +74,26 @@ function summarize(item: Workitem, project: string): Issue {
   }
 }
 
+async function inBatches<T, R>(items: T[], run: (item: T) => Promise<R>): Promise<R[]> {
+  const rows: R[] = []
+  for (let i = 0; i < items.length; i += 8) rows.push(...await Promise.all(items.slice(i, i + 8).map(run)))
+  return rows
+}
+
 export function apply(ctx: Context) {
   const home = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'dy-yunxiao')
   const recentIssues = new Map<string, Issue>()
   const deadlineFields = new Map<string, string>()
   const settings = createConnectionSettings(ctx.credentials)
-  ctx.inject(['skills'], scope => { scope.skills.register(executionSkill) })
+  const skillSources = createSkillSources(home)
+  const installations = createSkillInstallations(home, id => ctx.agents.get(id), () => {
+    // DSH 0.2.2's slash menu uses this forwarded event to drop its per-session catalog cache.
+    ctx.emit('plugin-manager/changed', { reason: 'plugin' })
+  })
+  ctx.inject(['skills'], scope => {
+    scope.skills.register(executionSkill)
+    scope.skills.registerProvider(installations.provider)
+  })
   const workflow = createWorkflow({
     home, client: settings.client,
     host: {
@@ -118,6 +133,13 @@ export function apply(ctx: Context) {
     const value = ctx.workspaceRegistry.get(id)
     if (!value) throw new Error('请先在 DSH 中注册并选择目标工作区')
     return value
+  }
+
+  function skillTargets(): SkillTarget[] {
+    return [
+      ...ctx.workspaceRegistry.list().map(({ id, title }) => ({ kind: 'project' as const, id, name: title })),
+      dshSkillTarget,
+    ]
   }
 
   async function meta(): Promise<Meta> {
@@ -166,7 +188,9 @@ export function apply(ctx: Context) {
     ])
     const rows = await Promise.all(items.map(async item => {
       const row = summarize(item, input.project)
-      row.plan = plans.find(plan => plan.members.includes(row.id))?.name
+      const plan = plans.find(plan => plan.members.includes(row.id))
+      row.plan = plan?.name
+      row.planId = plan?.id
       const rowKey = JSON.stringify([api.organization, row.project, row.id])
       recentIssues.set(rowKey, row)
       if (recentIssues.size > 1000) recentIssues.delete(recentIssues.keys().next().value!)
@@ -184,35 +208,166 @@ export function apply(ctx: Context) {
     const item = await api.get(input.id)
     if (projectOf(item) && projectOf(item) !== input.project) throw new Error('议题不属于当前云效项目')
     const binding = input.workspaceId ? await workflow.bindingFor(workspace(input.workspaceId).path, input, api.organization) : null
-    const source = descriptionOf(item)
-    const text = source.replace(/<\/?(?:div|p|li|br|h[1-6])\b[^>]*>/gi, '\n').replace(/<[^>]*>/g, '')
-      .replace(/&(amp|nbsp|lt|gt|quot|#39);/g, (_match: string, key: string) => ({ amp: '&', nbsp: ' ', lt: '<', gt: '>', quot: '"', '#39': "'" })[key] || '')
-      .trim()
-    let materialsError: string | undefined
-    const files: Details['files'] = []
-    const seen = new Set<string>()
-    try {
-      for (const file of await api.attachments(item.id, undefined)) {
-        seen.add(file.fileId)
-        const fileName = file.fileName || file.fileId
-        files.push({ name: fileName, url: webUrl(file.url), image: /\.(png|jpe?g|gif|webp)$/i.test(fileName) })
-      }
-    } catch {
-      materialsError = '议题附件读取失败，可重试或填补充后开工'
-    }
-    const ids = [...new Set([...source.matchAll(/fileIdentifier=([\w-]+)/g)].map(match => match[1]))].slice(0, 30)
-    for (const id of ids.filter(id => !seen.has(id))) {
+    const materials = await issueMaterials(api, item.id, descriptionOf(item))
+    return { ...summarize(item, input.project), ...materials, sessionId: binding?.dispatched ? binding.sessionId : undefined, preparedSessionId: binding?.prepared && !binding.dispatched ? binding.sessionId : undefined, pendingTarget: (await workflow.pendingTransition(input, api))?.target }
+  }
+
+  type Client = Awaited<ReturnType<typeof settings.client>>
+  function planDirectory(input: PlanKey) {
+    return workspace(input.workspaceId).path
+  }
+  async function readPlan(api: Client, input: PlanKey) {
+    const plan = (await workflow.plans(planDirectory(input), input.project, api.organization)).find(row => row.id === input.planId)
+    if (!plan) throw new Error('当前工作区没有该交付计划')
+    return plan
+  }
+  function updateDelivery(api: Client, input: PlanKey, update: Parameters<typeof workflow.updateDelivery>[4]) {
+    return workflow.updateDelivery(planDirectory(input), input.project, api.organization, input.planId, update)
+  }
+  async function planRows(api: Client, filter: { project?: string; workspaceId?: string } = {}): Promise<PlanRow[]> {
+    const projects = options(await api.projects()).filter(project => !filter.project || project.id === filter.project)
+    const workspaces = filter.workspaceId ? [workspace(filter.workspaceId)] : ctx.workspaceRegistry.list()
+    const scopes = workspaces.flatMap(target => projects.map(project => ({ target, project })))
+    const groups = await inBatches(scopes, async ({ target, project }) =>
+      (await workflow.plans(target.path, project.id, api.organization)).map(plan => ({
+        plan, planId: plan.id, project: project.id, projectName: project.name, workspaceId: target.id, workspaceName: target.title,
+      })))
+    return groups.flat().sort((a, b) => a.plan.end.localeCompare(b.plan.end) || a.plan.name.localeCompare(b.plan.name))
+  }
+  function requireDelivery(plan: Plan) {
+    if (!plan.delivery) throw new Error('请先配置计划仓库和目标分支')
+    return plan.delivery
+  }
+  async function planDetails(api: Client, input: PlanKey): Promise<PlanDetails> {
+    const plan = await readPlan(api, input)
+    const delivery = plan.delivery
+    const mrState = async () => {
+      if (!delivery) return { candidates: [] }
       try {
-        const file = await api.file(item.id, id, undefined)
-        files.push({ name: file.name || file.fileName || id, url: webUrl(file.url), image: true })
-      } catch {
-        materialsError = '部分正文图片无法读取，可在云效查看'
+        if (delivery.mr) return { candidates: [], mrStatus: (await api.codeup.detail(delivery.mr)).status }
+        const existing = await api.codeup.openForSource(delivery.repositoryId, plan.branch)
+        return { candidates: existing.filter(mr => mr.target === delivery.target) }
+      } catch (error) {
+        return { candidates: [], mrError: error instanceof Error ? error.message : String(error) }
       }
     }
-    return { ...summarize(item, input.project), text, files, materialsError, sessionId: binding?.dispatched ? binding.sessionId : undefined, preparedSessionId: binding?.prepared && !binding.dispatched ? binding.sessionId : undefined, pendingTarget: (await workflow.pendingTransition(input, api))?.target }
+    const [issues, state] = await Promise.all([inBatches(plan.members, async id => {
+      try {
+        const item = await api.get(id)
+        if (projectOf(item) && projectOf(item) !== input.project) throw new Error('议题不属于当前云效项目')
+        return summarize(item, input.project)
+      } catch {
+        return { id, reference: id, title: '', owner: '', state: { id: '', name: '' }, url: '', error: '议题读取失败' }
+      }
+    }), mrState()])
+    return { plan, issues, ...state }
   }
 
   const methods = {
+    mrRepos: ({ workspaceId }: { workspaceId: string }) => mrRepos(workspace(workspaceId).path),
+    async mrPreview({ workspaceId, key }: { workspaceId: string; key: string }) {
+      return mrPreview(workspace(workspaceId).path, key, (await settings.client()).codeup)
+    },
+    async submitMr(input: MrInput) {
+      return submitMr(workspace(input.workspaceId).path, input, (await settings.client()).codeup)
+    },
+    async workbenchPlans(filter: { project?: string; workspaceId?: string }) {
+      const api = await settings.client()
+      return inBatches(await planRows(api, filter), async row => {
+        const mr = row.plan.delivery?.mr
+        if (!mr) return row
+        const status = await api.codeup.detail(mr).then(result => result.status, () => 'UNAVAILABLE')
+        return { ...row, mrStatus: status || 'UNAVAILABLE' }
+      })
+    },
+    async workbenchPlan(input: PlanKey) {
+      return planDetails(await settings.client(), input)
+    },
+    async planDeliveryOptions(input: PlanKey & { key: string }) {
+      const api = await settings.client()
+      const plan = await readPlan(api, input)
+      return deliveryOptions(planDirectory(input), input.key, plan.branch, api.codeup)
+    },
+    async bindPlanDelivery(input: PlanKey & { key: string; repositoryId: number; target: string }) {
+      const api = await settings.client()
+      return updateDelivery(api, input, async plan => {
+        if (plan.delivery?.mr) throw new Error('交付分支已有合并请求，无法修改绑定')
+        const { repository, targets } = await deliveryOptions(planDirectory(input), input.key, plan.branch, api.codeup)
+        if (repository.id !== input.repositoryId || !targets.includes(input.target)) throw new Error('仓库或目标分支已变化，请重新选择')
+        return { key: input.key, repositoryId: repository.id, path: repository.path, target: input.target }
+      })
+    },
+    async linkPlanMr(input: PlanKey & MrRef) {
+      const api = await settings.client()
+      return updateDelivery(api, input, async plan => {
+        const delivery = requireDelivery(plan)
+        if (delivery.repositoryId !== input.repositoryId) throw new Error('计划仓库已变化，请刷新')
+        if (delivery.mr?.localId === input.localId) return delivery
+        if (delivery.mr) throw new Error('交付分支已关联其他合并请求')
+        const matches = await api.codeup.openForSource(delivery.repositoryId, plan.branch)
+        if (!matches.some(mr => mr.localId === input.localId && mr.target === delivery.target)) {
+          throw new Error('该开放 MR 与计划的仓库、源分支或目标分支不匹配，请刷新计划')
+        }
+        return { ...delivery, mr: { repositoryId: delivery.repositoryId, localId: input.localId } }
+      })
+    },
+    async submitPlanMr(input: PlanKey & MrInput) {
+      const api = await settings.client()
+      const delivery = await updateDelivery(api, input, async plan => {
+        const binding = requireDelivery(plan)
+        if (input.repositoryId !== binding.repositoryId || input.key !== binding.key ||
+          input.branch !== plan.branch || input.target !== binding.target) throw new Error('计划分支已变化，请刷新后重试')
+        if (binding.mr) return binding
+        const result = await submitMr(planDirectory(input), input, api.codeup)
+        return { ...binding, mr: { repositoryId: binding.repositoryId, localId: result.localId } }
+      })
+      return delivery.mr!
+    },
+    async workbenchMrs(input: { queue: 'mine' | 'review' | 'all'; page: number; repository: string }) {
+      if (!['mine', 'review', 'all'].includes(input.queue) || !Number.isSafeInteger(input.page) || input.page < 1 ||
+        typeof input.repository !== 'string' || input.repository.length > 256) throw new Error('无效的合并请求筛选条件')
+      const api = await settings.client()
+      const user = input.queue === 'all' ? undefined : await api.currentUser()
+      const result = await api.codeup.list({ page: input.page, repository: input.repository.trim(),
+        authorId: input.queue === 'mine' ? user?.id : undefined, reviewerId: input.queue === 'review' ? user?.id : undefined })
+      return { ...result, user: user?.name }
+    },
+    async workbenchMr(input: MrRef) {
+      const api = await settings.client()
+      const [mr, plans] = await Promise.all([
+        api.codeup.detail(input),
+        planRows(api).then(rows => ({
+          rows: rows.filter(row => row.plan.delivery?.mr?.repositoryId === input.repositoryId &&
+            row.plan.delivery.mr.localId === input.localId), error: '',
+        }), () => ({ rows: [], error: '关联计划读取失败' })),
+      ])
+      return { mr, plans: plans.rows, planError: plans.error }
+    },
+    skillSources: skillSources.list,
+    bindSkillSource: (input: SkillSourceInput) => skillSources.bind(input),
+    refreshSkillSource: ({ id }: { id: string }) => skillSources.refresh(id),
+    renameSkillSource: ({ id, name }: { id: string; name: string }) => skillSources.rename(id, name),
+    unbindSkillSource: ({ id }: { id: string }) => skillSources.unbind(id),
+    skillTargets,
+    skillInstallations: installations.list,
+    async installSkill(input: { sourceId: string; path: string; readAt: string; targetKind: SkillTarget['kind']; targetId: string }) {
+      const source = skillSources.list().find(item => item.id === input.sourceId)
+      const skill = source?.skills.find(item => item.path === input.path)
+      if (!source || !skill || skill.readAt !== input.readAt) throw new Error('技能目录已更新，请重新读取后安装')
+      const target = skillTargets().find(item => item.kind === input.targetKind && item.id === input.targetId)
+      if (!target) throw new Error('请选择仍然可用的项目或 .dsh Agent')
+      if (target.kind === 'project') {
+        const { root } = await skillProjectRoot(workspace(target.id).path)
+        await installations.install(source, skill, { ...target, directory: root })
+      } else {
+        await installations.install(source, skill, target)
+      }
+      return installations.list()
+    },
+    async uninstallSkill({ id }: { id: string }) {
+      await installations.uninstall(id)
+      return installations.list()
+    },
     meta, search, detail,
     connectionSettings: settings.describe,
     connectionOrganizations: settings.organizations,
@@ -268,8 +423,11 @@ export function apply(ctx: Context) {
     plans(input: { project: string; workspaceId: string }) {
       return workflow.plans(workspace(input.workspaceId).path, input.project)
     },
-    createPlan(input: { project: string; workspaceId: string; name: string; branch: string; end: string }) {
-      return workflow.createPlan(workspace(input.workspaceId).path, input.project, input)
+    async createPlan(input: { project: string; workspaceId: string; name: string; branch: string; end: string; repositoryKey?: string }) {
+      const cwd = workspace(input.workspaceId).path
+      const repository = input.repositoryKey
+        ? { key: input.repositoryKey, directory: await workspaceRepository(cwd, input.repositoryKey) } : undefined
+      return workflow.createPlan(cwd, input.project, input, repository)
     },
     addToPlan(input: { project: string; workspaceId: string; planId: string; ids: string[] }) {
       if (!Array.isArray(input.ids) || !input.ids.length || input.ids.length > 100) throw new Error('每批可选 1 到 100 条议题')

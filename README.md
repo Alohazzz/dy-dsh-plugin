@@ -1,12 +1,12 @@
-# dy-dsh-plugin
+# 研发工作台
 
-面向 DeepSeek Harness 的公司工作流插件。首版提供云效议题列表与筛选、交付计划、单议题开工、评论回写和状态流转。单条与多选「发起讨论」可查看议题清单，讨论工作流待定。
+面向 DeepSeek Harness 的公司研发工作台，提供「云效议题」「交付计划」「合并请求」和「技能管理」四个入口。「云效议题」支持筛选、单议题开工、加入计划、评论回写和状态流转。「技能管理」支持绑定公司 Git 技能仓库和本地目录，刷新目录并查阅技能说明及配套文件。
 
 [首版 Spec](docs/specs/yunxiao-v1.md) · [Nezha 移植清单](docs/migration-checklist.md)
 
 ## 插件索引与发版
 
-在支持自定义插件索引的 DSH 中启用「自定义插件索引」，然后在「插件 → 发现」添加 [云效议题插件索引](https://alohazzz.github.io/dy-dsh-plugin/index.json)。从该索引安装，后续在插件页查看并确认兼容版本的更新。也可以从 [GitHub Releases](https://github.com/Alohazzz/dy-dsh-plugin/releases) 下载预构建安装包。
+在支持自定义插件索引的 DSH 中启用「自定义插件索引」，然后在「插件 → 发现」添加研发工作台插件索引。从索引安装后，可在插件页查看并确认兼容版本的更新，也可下载预构建安装包。[插件索引](https://alohazzz.github.io/dy-dsh-plugin/index.json) · [GitHub Releases](https://github.com/Alohazzz/dy-dsh-plugin/releases)
 
 发版时同步更新 `package.json` 与 `package-lock.json` 的版本，提交后推送对应的 `vX.Y.Z` 标签。GitHub Actions 校验、测试与打包后发布至 npm，创建 GitHub Release，再从 npm 生成 Pages 索引。
 
@@ -23,7 +23,15 @@ $bundle = (Resolve-Path './dy-dsh-plugin-0.1.5.tgz').Path
 & $desktopCli plugin --profile desktop add $bundle
 ```
 
-重启 Desktop，在左侧「云效议题」打开面板。先在应用中配置可用的模型提供方，并在工作区列表添加实际开发目录。创建交付计划时填写该工作区已存在的本地分支。
+重启 Desktop，从左侧「研发工作台」进入。使用云效议题开工前，在应用中配置可用的模型提供方，并在工作区列表添加实际开发目录。创建交付计划时填写该工作区已存在的本地分支。
+
+打开交付计划详情，配置 Codeup 仓库和目标分支。计划分支匹配已有开放 MR 时，可直接关联。发起新 MR 前，先在对应仓库检出计划源分支，在工作台核对提交并确认推送。计划列表显示 Codeup 返回的合并状态。
+
+「合并请求」支持单仓发起、按仓库查询和「待我审核」。从计划和待审队列打开的是同一份 MR 详情。审核意见和最终合并在 Codeup 处理。读取 MR 需要合并请求读取权限，创建还需要写权限和 Git 推送权限。
+
+在「研发工作台 → 技能管理」添加本地绝对目录，或绑定 HTTPS、SSH 技能仓库。Git 仓库使用运行 DSH 的本机用户已配置的 Git 凭据。分支留空时跟随远端默认分支。点击「刷新」可更新当前来源。
+
+从左侧目录选择技能，在右侧详情点「安装到…」。选择项目时，技能随项目工作目录发现。选择「.dsh Agent」时，技能可在当前 DSH 实例的各项目使用。安装由研发工作台管理，并保留当时的说明、配套文件及来源版本。可从技能详情或「已安装」按目标查看和卸载。
 
 卸载时先完全退出 Desktop，然后运行 `& $desktopCli plugin --profile desktop remove dy-dsh-plugin` 并重启。已保存的计划、会话绑定与回执仍可在重新安装后使用。
 

@@ -15,6 +15,10 @@
 | 更新分类 | `gh issue edit <编号> --add-label <新标签> --remove-label <旧标签>` |
 | 关闭议题 | `gh issue close <编号>` |
 
+功能或缺陷修复合入 GitHub 主分支，并通过该议题的验收后，以 `Completed` 关闭。
+如果议题明确要求上线验证，则在发版并通过上线验证后关闭。
+维护者已决定不予处理的议题标记为 `wontfix`，以 `Not planned` 关闭。
+
 拆分任务时优先使用 GitHub 子议题。无法建立子议题关系时，在子议题正文写
 `Part of #<父议题编号>`，并在父议题中列出子任务。
 

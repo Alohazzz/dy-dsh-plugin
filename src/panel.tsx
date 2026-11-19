@@ -1,5 +1,8 @@
+import { createDeliveryPanels } from './delivery-panels.tsx'
 import type * as ReactType from 'react'
-import type { ConnectionSettings, Details, Issue, Meta, Option, Plan, PlanResult, Preview } from './contracts.ts'
+import { createSkillPanel } from './skill-panel.tsx'
+import type { ConnectionSettings, Details, Issue, Meta, MrRef, Option, Plan, PlanKey, PlanResult, Preview } from './contracts.ts'
+import type { mrRepos } from './merge-request.ts'
 
 type Navigation = { openSession(id: string): void }
 type Slots = {
@@ -83,6 +86,7 @@ window.__ModuleLoader__.load({
   id: 'dy-dsh-plugin',
   factory(require) {
     const React = require('react')
+    const { Plans, Requests, RequestDetail } = createDeliveryPanels(React, rpc)
     const { useEffect, useRef, useState } = React
 
     function Multi({ title, options, values, change }: {
@@ -146,6 +150,21 @@ window.__ModuleLoader__.load({
       </>
     }
 
+    function IssueMaterials({ detail }: { detail: Details }) {
+      const body = detail.body || (detail.text ? [{ text: detail.text }] : [])
+      const inline = new Set(body.flatMap(part => 'file' in part ? [part.file] : []))
+      const attachments = detail.files.filter((_, i) => !inline.has(i))
+      return <>
+        <div className="dy-yx-description">{body.length ? body.map((part, i) => 'text' in part
+          ? <div key={i}>{part.text}</div>
+          : <div key={i}><Attachment file={detail.files[part.file]} /></div>) : '无正文'}</div>
+        {detail.materialsError && <p role="alert">{detail.materialsError}</p>}
+        {attachments.length > 0 && <><h3>附件</h3><ul>
+          {attachments.map((file, i) => <li key={i}><Attachment file={file} /></li>)}
+        </ul></>}
+      </>
+    }
+
     const statusTones: Record<string, string> = {
       待处理: 'blue', 待确认: 'blue', 已确认: 'blue',
       待开发: 'green', 开发中: 'green', 开发完成: 'green', 待测试: 'green', 测试中: 'green', 测试完成: 'green',
@@ -169,7 +188,9 @@ window.__ModuleLoader__.load({
         stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d={actionPaths[name]} /></svg>
     }
 
-    function Panel({ ctx }: { ctx: { uiWorkspace: Navigation } }) {
+    function Panel({ ctx, plansChanged, openPlan }: {
+      ctx: { uiWorkspace: Navigation }; plansChanged(): void; openPlan(plan: PlanKey): void
+    }) {
       const [meta, setMeta] = useState<Meta>()
       const [metaError, setMetaError] = useState('')
       const [selection, setSelection] = useState<Selection>({ ...emptyConditions, project: '', workspaceId: '' })
@@ -191,6 +212,7 @@ window.__ModuleLoader__.load({
       const [detailError, setDetailError] = useState('')
       const [marked, setMarked] = useState<Issue[]>([])
       const [modal, setModal] = useState<Modal>()
+      const [addAfterCreate, setAddAfterCreate] = useState<Issue[]>()
       const [settingsOpen, setSettingsOpen] = useState(false)
       const [notice, setNotice] = useState('')
       const [pending, setPending] = useState<Record<string, string>>({})
@@ -295,7 +317,7 @@ window.__ModuleLoader__.load({
 
       if (!meta && !metaError) return <main className="dy-yx">正在读取 DSH 工作区与云效配置…</main>
       return <main className="dy-yx">
-        <header><div><h1>云效议题</h1><small>{meta?.user ? '已连接 · ' + meta.organization + ' · ' + meta.user : '云效连接待配置'}</small></div>
+        <header><div><h2>云效议题</h2><small>{meta?.user ? '已连接 · ' + meta.organization + ' · ' + meta.user : '云效连接待配置'}</small></div>
           <div className="dy-yx-actions">
             <button onClick={() => refresh(value => value + 1)}>刷新</button>
             <button onClick={() => void connect()}>重新连接</button>
@@ -312,7 +334,6 @@ window.__ModuleLoader__.load({
           <label>目标工作区 <select value={workspaceId} onChange={event => { clearContext(); updateSelection({ workspaceId: event.target.value }) }}>
             <option value="">请选择</option>{meta?.workspaces.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select></label>
-          <button disabled={!workspaceId || !project} onClick={() => setModal({ kind: 'create', issues: [] })}>创建计划</button>
         </div>
         {project && <>
           <div className="dy-yx-bar dy-yx-filters" aria-label="筛选议题">
@@ -363,7 +384,8 @@ window.__ModuleLoader__.load({
                     <span>{categories[issue.category] || issue.category}</span><StatusBadge name={issue.state.name} />
                     {[issue.product, issue.priority, issue.owner, issue.created && '创建 ' + issue.created].filter(Boolean).map((item, i) => <span key={i}>{item}</span>)}
                     {issue.deadline && <span className={issue.deadline < today && !['已完成','已关闭'].includes(issue.state.name) ? 'dy-yx-overdue' : ''}>截止 {issue.deadline}</span>}
-                    {issue.plan && <span className="dy-yx-tag">{issue.plan}</span>}
+                    {issue.plan && (issue.planId ? <button className="dy-delivery-link" onClick={() =>
+                      openPlan({ project, workspaceId, planId: issue.planId! })}>{issue.plan}</button> : <span className="dy-yx-tag">{issue.plan}</span>)}
                   </div>
                   {marked.length === 0 && <div className="dy-yx-actions">
                     <button disabled={!workspaceId} onClick={() => issue.sessionId ? ctx.uiWorkspace.openSession(issue.sessionId) : openModal('start', issue)}>
@@ -395,13 +417,7 @@ window.__ModuleLoader__.load({
                 {detailError && <p role="alert">{detailError} <button onClick={() => refresh(value => value + 1)}>重试读取</button></p>}
                 {!detail && !detailError && <p role="status">正在读取议题详情…</p>}
                 {detail && <>
-                  <h3>议题正文</h3><p className="dy-yx-description">{detail.text || '无正文'}</p>
-                  {detail.materialsError && <p role="alert">{detail.materialsError}</p>}
-                  {detail.files.length > 0 && <><h3>附件与正文图片</h3><ul>
-                    {detail.files.map((file, i) => <li key={i}>
-                      <Attachment file={file} />
-                    </li>)}
-                  </ul></>}
+                  <h3>议题正文</h3><IssueMaterials detail={detail} />
                 </>}
               </>}
             </section>
@@ -413,12 +429,21 @@ window.__ModuleLoader__.load({
           setSeenProducts([])
           setPending({})
           await connect(true)
+          plansChanged()
         }} />}
         {modal && <Dialog key={modal.kind} modal={modal} detail={'issue' in modal && detail?.id === modal.issue.id ? detail : undefined} detailError={detailError} meta={meta}
-          workspaceId={workspaceId} project={project} close={() => setModal(undefined)} pending={pending}
+          workspaceId={workspaceId} project={project} close={() => {
+            setModal(modal.kind === 'create' && addAfterCreate ? { kind: 'add', issues: addAfterCreate } : undefined)
+            setAddAfterCreate(undefined)
+          }} pending={pending}
           setPending={(id, target) => setPending(previous => ({ ...previous, [id]: target }))}
           refresh={() => refresh(value => value + 1)} onSuccess={passed}
-          onPlan={() => { setMarked([]); refresh(value => value + 1) }}
+          onPlan={() => { setMarked([]); refresh(value => value + 1); plansChanged() }}
+          onCreate={() => {
+            if (modal.kind !== 'add') return
+            setAddAfterCreate(modal.issues)
+            setModal({ kind: 'create', issues: [] })
+          }}
           onOpenSession={id => { setModal(undefined); refresh(value => value + 1); ctx.uiWorkspace.openSession(id) }} />}
       </main>
     }
@@ -583,9 +608,15 @@ window.__ModuleLoader__.load({
     function Dialog(props: {
       modal: Modal; detail?: Details; detailError: string; meta?: Meta; workspaceId: string; project: string
       close(): void; refresh(): void; pending: Record<string, string>; setPending(id: string, target: string): void
-      onSuccess(issue: Issue, result: string): void; onPlan(): void; onOpenSession(id: string): void
+      onSuccess(issue: Issue, result: string): void
+      onPlan(plan?: Plan, scope?: Omit<PlanKey, 'planId'>): void
+      onOpenSession(id: string): void; onCreate?(): void; selectPlanScope?: boolean
     }) {
-      const { modal, close, detail, meta, project, workspaceId, pending, setPending } = props
+      const { modal, close, detail, meta, pending, setPending, selectPlanScope } = props
+      const [planProject, setPlanProject] = useState(props.project || meta?.defaultProject || meta?.projects[0]?.id || '')
+      const [planWorkspace, setPlanWorkspace] = useState(props.workspaceId || meta?.workspaces[0]?.id || '')
+      const project = selectPlanScope ? planProject : props.project
+      const workspaceId = selectPlanScope ? planWorkspace : props.workspaceId
       const { kind } = modal
       const issue = 'issue' in modal ? modal.issue : undefined
       const issues = 'issues' in modal ? modal.issues : []
@@ -595,6 +626,8 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState('')
       const [revision, retryRead] = useState(0)
       const [plans, setPlans] = useState<Plan[]>()
+      const [repositories, setRepositories] = useState<Awaited<ReturnType<typeof mrRepos>>>([])
+      const [repoKey, setRepoKey] = useState('')
       const [planId, setPlan] = useState('')
       const [results, setResults] = useState<PlanResult[]>()
       const [draft, setDraft] = useState<Preview>()
@@ -623,6 +656,14 @@ window.__ModuleLoader__.load({
         if (kind === 'move' && !targetPending) rpc<typeof states>('statuses', base, abort.signal).then(setStates, failure)
         return () => abort.abort()
       }, [revision])
+      useEffect(() => {
+        if (kind !== 'create' || !workspaceId) return
+        const abort = new AbortController()
+        rpc<Awaited<ReturnType<typeof mrRepos>>>('mrRepos', { workspaceId }, abort.signal).then(rows => {
+          if (!abort.signal.aborted) setRepositories(rows)
+        }, () => { /* The root repository can still be checked when the form is submitted. */ })
+        return () => abort.abort()
+      }, [kind, workspaceId])
 
       async function run(operation: () => Promise<void>) {
         if (busy) return
@@ -634,8 +675,8 @@ window.__ModuleLoader__.load({
       async function submit(form: HTMLFormElement) {
         if (kind === 'create') {
           const values = Object.fromEntries(new FormData(form))
-          await rpc('createPlan', { ...base, ...values })
-          props.onPlan(); close()
+          const plan = await rpc<Plan>('createPlan', { ...base, ...values })
+          close(); props.onPlan(plan, { project, workspaceId })
         }
         if (kind === 'add') {
           const ids = results ? results.filter(row => row.retryable).map(row => row.id) : issues.map(row => row.id)
@@ -681,7 +722,7 @@ window.__ModuleLoader__.load({
         }
       }
 
-      const canSubmit = kind === 'create' || kind === 'start' && (detail || props.detailError && notes.trim()) ||
+      const canSubmit = kind === 'create' && project && workspaceId || kind === 'start' && (detail || props.detailError && notes.trim()) ||
         kind === 'add' && planId && (!results || results.some(row => row.retryable)) ||
         kind === 'publish' && draft && draft.receipts.some(receipt => !receipt) ||
         kind === 'move' && (targetPending || target)
@@ -697,18 +738,30 @@ window.__ModuleLoader__.load({
           <h2 id="dy-yx-dialog-title">{title}</h2>
           {issue && <p>{issue.reference} · {issue.title}</p>}
           {issues.length > 0 && <ol>{issues.map(row => <li key={row.id}>{row.reference} · {row.title}</li>)}</ol>}
-          {(kind === 'discuss' || kind === 'create' || kind === 'add') &&
+          {(kind === 'discuss' || kind === 'add' || kind === 'create' && !selectPlanScope) &&
             <p>目标工作区 · {meta?.workspaces.find(item => item.id === workspaceId)?.name}</p>}
           <fieldset disabled={busy}>
             {kind === 'discuss' && <p>讨论流程待定。</p>}
             {kind === 'create' && <>
+              {selectPlanScope && <>
+                <label>云效项目<select value={project} onChange={event => setPlanProject(event.target.value)}>
+                  {meta?.projects.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
+                <label>目标工作区<select value={workspaceId} onChange={event => {
+                  setPlanWorkspace(event.target.value); setRepositories([]); setRepoKey('')
+                }}>{meta?.workspaces.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
+              </>}
               <label>计划名称<input name="name" required maxLength={100} /></label>
+              {repositories.some(row => row.key !== '.') && <label>仓库<select value={repoKey} name="repositoryKey" onChange={event => setRepoKey(event.target.value)}>
+                <option value="">工作区根目录</option>
+                {repositories.filter(row => row.key !== '.').map(row => <option key={row.key} value={row.key}>{row.name} · {row.key}</option>)}
+              </select></label>}
               <label>已有本地分支<input name="branch" required placeholder="feature/example" /></label>
               <label>计划完成日期<input type="date" name="end" required /></label>
             </>}
             {kind === 'add' && <>
               {!plans && !error && <p>正在读取计划…</p>}
-              {plans?.length === 0 && <p>本工作区暂无可用计划，请先创建计划。</p>}
+              {plans?.length === 0 && <p>本工作区暂无可用计划。 {props.onCreate &&
+                <button type="button" onClick={props.onCreate}>创建计划</button>}</p>}
               {Boolean(plans?.length) && <label>目标计划
                 <select value={planId} disabled={Boolean(results)} onChange={event => setPlan(event.target.value)}>
                   {plans?.map(item => <option key={item.id} value={item.id}>{item.name} · {item.end}</option>)}
@@ -724,10 +777,7 @@ window.__ModuleLoader__.load({
                 {detail ? <p>已读取正文，附件与图片 {detail.files.length} 项。{detail.materialsError}</p> :
                   <p>{props.detailError || '正在读取议题原文…'}</p>}
                 {detail && <details><summary>查看原文与附件</summary>
-                  <p className="dy-yx-description">{detail.text || '无正文'}</p>
-                  <ul>{detail.files.map((file, i) => <li key={i}>
-                    <Attachment file={file} />
-                  </li>)}</ul>
+                  <IssueMaterials detail={detail} />
                 </details>}
                 {detail?.preparedSessionId && <button type="button" onClick={() => props.onOpenSession(detail.preparedSessionId!)}>
                   打开已准备会话
@@ -770,6 +820,56 @@ window.__ModuleLoader__.load({
       </dialog>
     }
 
+    const SkillPanel = createSkillPanel(React, rpc)
+    const moduleKey = 'dy-yunxiao:workbench-module'
+    const modules = { issues: '云效议题', plans: '交付计划', requests: '合并请求', skills: '技能管理' }
+    type Module = keyof typeof modules
+    type MrOrigin = ReactType.ComponentProps<typeof RequestDetail>['origin']
+
+    function Workbench(props: { ctx: { uiWorkspace: Navigation } }) {
+      const [module, setModule] = useState<Module>(() => {
+        const saved = localStorage.getItem(moduleKey) || ''
+        return Object.hasOwn(modules, saved) ? saved as Module : 'issues'
+      })
+      const [visited, setVisited] = useState(() => ({ [module]: true }))
+      const [plan, setPlan] = useState<PlanKey>()
+      const [mr, setMr] = useState<{ ref: MrRef; origin: MrOrigin }>()
+      const [revision, refresh] = useState(0)
+      const changed = () => refresh(value => value + 1)
+      function open(next: typeof module) {
+        setModule(next)
+        setVisited(previous => ({ ...previous, [next]: true }))
+        localStorage.setItem(moduleKey, next)
+      }
+      function openPlan(next?: PlanKey) {
+        setPlan(next); setMr(undefined); open('plans')
+      }
+      function openMr({ repositoryId, localId }: MrRef, origin: MrOrigin) {
+        setMr({ ref: { repositoryId, localId }, origin }); open('requests')
+      }
+      return <div className="dy-wb">
+        <div className="dy-yx dy-wb-heading">
+          <h1>研发工作台</h1>
+          <nav aria-label="研发工作台模块">
+            {(Object.keys(modules) as Module[]).map(next => <button key={next} aria-current={module === next ? 'page' : undefined}
+              onClick={() => { if (next !== module) { setMr(undefined); open(next) } }}>{modules[next]}</button>)}
+          </nav>
+        </div>
+        <div className="dy-wb-content" hidden={module !== 'issues'}>{visited.issues && <Panel {...props} plansChanged={changed} openPlan={openPlan} />}</div>
+        <div className="dy-wb-content" hidden={module !== 'plans'}>{visited.plans && <Plans selected={plan} revision={revision}
+          openPlan={openPlan} openMr={ref => openMr(ref, 'plan')} changed={changed}
+          renderCreate={(scope, meta, close, saved) => <Dialog modal={{ kind: 'create', issues: [] }} detailError="" meta={meta}
+            {...scope} selectPlanScope close={close} refresh={changed} pending={{}} setPending={() => {}} onSuccess={() => {}}
+            onPlan={saved} onOpenSession={() => {}} />} />}</div>
+        <div className="dy-wb-content" hidden={module !== 'requests' || !!mr}>{visited.requests && <Requests revision={revision}
+          active={module === 'requests' && !mr} openMr={openMr} />}</div>
+        {module === 'requests' && mr && <div className="dy-wb-content"><RequestDetail
+          key={mr.ref.repositoryId + ':' + mr.ref.localId} reference={mr.ref} origin={mr.origin}
+          back={() => { setMr(undefined); if (mr.origin === 'plan') open('plans') }} openPlan={openPlan} /></div>}
+        <div className="dy-wb-content" hidden={module !== 'skills'}>{visited.skills && <SkillPanel />}</div>
+      </div>
+    }
+
     function Icon() { return <span aria-hidden="true">☷</span> }
 
     return {
@@ -783,11 +883,11 @@ window.__ModuleLoader__.load({
           document.head.append(stylesheet)
         }
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-          name: 'sidebar.panellist', id: 'dy-yunxiao', label: '云效议题', order: 40,
+          name: 'sidebar.panellist', id: 'dy-yunxiao', label: '研发工作台', order: 40,
         }, Icon))
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main', key: 'dy-yunxiao', inject: () => ({ ctx }),
-        }, Panel))
+        }, Workbench))
       },
     }
   },

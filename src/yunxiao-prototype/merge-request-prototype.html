@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>单仓合并请求 · 交互原型</title>
+<!-- A 工作区双栏：逐仓查看 Git 状态，一次为一个仓库发起 MR。 -->
+<style>
+:root{color-scheme:light dark;--bg:light-dark(#f5f6f8,#171a20);--paper:light-dark(#fff,#22262c);--text:light-dark(#202632,#e7e9ef);--weak:light-dark(#616a79,#aeb8ca);--line:light-dark(#dce1e8,#414750);--accent:light-dark(#3755b5,#acc0ff);--tint:light-dark(#eef2ff,#2d3853);--ok:light-dark(#13775c,#85dec2);--warning:light-dark(#8a5916,#f1c889)}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 Inter,"Microsoft YaHei UI",sans-serif}main{max-width:1180px;margin:auto;padding:26px clamp(14px,4vw,50px) 110px}header,footer,.line,nav{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.spread{justify-content:space-between}.crumb,small,.muted{color:var(--weak)}h1{font-size:25px;margin:18px 0 5px}h2{font-size:23px;margin:0}h3{font-size:15px;margin:0 0 14px}p{margin:5px 0 12px}button,input,select,textarea{font:inherit;color:inherit;border:1px solid var(--line);border-radius:6px;background:var(--paper);padding:6px 10px}button{cursor:pointer}button:hover{border-color:var(--accent)}button:disabled{opacity:.5;cursor:default}.primary{color:white;background:#3857b8;border-color:#3857b8}.sheet,.toolbar{background:var(--paper);border:1px solid var(--line);border-radius:10px}.toolbar{padding:12px 16px;margin:18px 0}.toolbar label{font-size:13px}.sheet{overflow:hidden}.head,footer{padding:18px 22px}.head{border-bottom:1px solid var(--line)}footer{justify-content:flex-end;border-top:1px solid var(--line)}.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(245px,.65fr)}.fields,aside{padding:20px 22px}aside{background:var(--bg);border-left:1px solid var(--line)}.fields label{display:block;margin:0 0 14px}.fields label:last-child{margin-bottom:0}.fields :is(select,input,textarea){display:block;width:100%;margin-top:5px}textarea{resize:vertical;min-height:64px}.mono,code{font:13px/1.7 Consolas,monospace;overflow-wrap:anywhere}.branch{background:var(--tint);color:var(--accent);padding:3px 8px;border-radius:4px}dl{margin:0}dt{color:var(--weak);font-size:12px;margin-top:13px}dd{margin:3px 0 0}.commits{border-top:1px solid var(--line);margin-top:15px;padding-top:12px}.commits p{margin:6px 0}.commits code{color:var(--weak);margin-right:8px}.status{color:var(--ok)}.warn{color:var(--warning)}.dock{position:fixed;z-index:5;bottom:12px;left:50%;transform:translateX(-50%);background:#263042;color:white;box-shadow:0 4px 16px #10182730;border-radius:12px;padding:6px 9px;width:max-content;max-width:96vw;justify-content:center;gap:6px;font-size:13px}.dock button,.dock select{background:#354154;color:white;border-color:#515c70}.dock select{max-width:155px}table{width:100%;border-collapse:collapse;text-align:left}th,td{padding:12px;border-bottom:1px solid var(--line)}th{background:var(--bg);color:var(--weak);font-size:12px}.layer{position:fixed;inset:0;background:#17223545;display:flex;z-index:2}.B .layer{justify-content:flex-end}.B .sheet{width:min(500px,100%);height:100%;border-radius:0;overflow:auto;padding-bottom:85px}.B .cols,.C .cols{display:flex;flex-direction:column}.B aside,.C aside{border:0}.C .layer{align-items:center;justify-content:center;padding:16px 16px 82px}.C .sheet{width:min(520px,100%);max-height:100%;overflow:auto}.step{font-size:13px;color:var(--accent);margin-bottom:8px}.result{padding:22px}.result strong{display:block;font-size:20px}.result a{color:var(--accent)}@media(max-width:680px){.cols{grid-template-columns:1fr}aside{border-left:0;border-top:1px solid var(--line)}.dock{gap:3px;font-size:12px}.dock select{max-width:112px}.dock button{padding:5px}.fields,aside,.head,footer{padding:14px}.crumb{font-size:12px}}
+.cols{grid-template-columns:minmax(270px,.78fr) minmax(340px,1.22fr)}
+.repos{padding:16px;background:var(--bg);border-right:1px solid var(--line)}
+.repo{display:block;width:100%;text-align:left;margin:6px 0;padding:10px 12px}
+.repo[aria-pressed=true]{border-color:var(--accent);background:var(--tint)}
+.repo small,.repo code{display:block}
+.context{background:var(--bg);border-radius:6px;padding:12px;margin:12px 0}
+.context p{margin:3px 0}.fields h3{margin-bottom:0}.fields details{margin:8px 0}
+@media(max-width:680px){.cols{grid-template-columns:1fr}.repos{border-right:0;border-bottom:1px solid var(--line)}}
+</style></head><body><main><div class="crumb">DeepSeek Harness　/　研发工作台</div><h1>云效议题</h1><small>已连接 · 示例组织</small>
+<div class="toolbar line"><label>云效项目　<b>Hsp 2.0</b></label><label>目标工作区　<b>HIS</b></label><button disabled>创建计划</button><button id="open">发起合并请求</button></div><div id="inline"></div>
+<section id="issues" class="sheet"><table><thead><tr><th>议题编号</th><th>标题</th><th>状态</th></tr></thead><tbody><tr><td>HSP-2086</td><td>结算明细导出时保留筛选条件</td><td>开发中</td></tr><tr><td>HSP-2085</td><td>修复跨日排班结束时间显示异常</td><td>待验证</td></tr></tbody></table></section></main>
+<nav class="dock"><span>模拟场景</span><select id="scene" aria-label="所选仓库的模拟场景"></select></nav>
+<script>
+const byId=id=>document.getElementById(id)
+const scenes={ahead:'领先 2 个提交',synced:'与上游同步',new:'远端尚无同名分支',behind:'落后 3 个提交',diverged:'领先 2 · 落后 1',detached:'游离 HEAD',existing:'已有开放 MR',partial:'推送后创建失败'}
+const repos=[
+  {name:'HIS',path:'.',branch:'main',sha:'2e91a07',scene:'synced',dirty:0,targets:['main','release/2.0'],title:'更新交付配置',commits:['更新交付配置','整理构建参数']},
+  {name:'Hsp.Win',path:'Hsp.Win',branch:'feature/export-filters',sha:'9c42e18',scene:'ahead',dirty:3,targets:['main','release/2.0'],title:'导出结算明细时保留筛选条件',commits:['保留导出筛选条件','补充日期范围校验']},
+  {name:'Nto.His.Term',path:'Nto.His/Nto.His.Term',branch:'fix/term-cache',sha:'6f204d3',scene:'new',dirty:0,targets:['develop','release/2.0'],title:'修复术语缓存刷新',commits:['刷新术语缓存','补充缓存校验']}
+]
+for(const repo of repos)Object.assign(repo,{target:repo.targets.find(t=>t!==repo.branch),description:'',result:'',mrs:new Map()})
+let selected=1,opened=true
+const escapeText=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c])
+const pending=r=>['ahead','new','partial'].includes(r.scene)
+const checkedBranch=r=>r.scene==='detached'?'游离 HEAD':r.branch
+const sync=r=>({existing:'与上游同步',partial:scenes.ahead,detached:'未检出本地分支'})[r.scene]||scenes[r.scene]
+byId('scene').innerHTML=Object.entries(scenes).map(([k,v])=>'<option value="'+k+'">'+v+'</option>').join('')
+function draw(){
+ const r=repos[selected],disabled=['behind','diverged','detached'].includes(r.scene)
+ const found=r.mrs.get(r.target),mr=found||('!'+(128+selected))
+ byId('issues').hidden=opened;byId('scene').parentElement.hidden=!opened
+ if(!opened){byId('inline').replaceChildren();return}
+ byId('scene').value=r.scene
+ const rows=repos.map((x,i)=>'<button class="repo" aria-pressed="'+(selected===i)+'" data-index="'+i+'"><b>'+x.name+'</b> <small>'+(i?'子仓库 · ./'+x.path:'主仓库 · 工作区根目录')+'</small><code>'+checkedBranch(x)+'</code><span class="'+(pending(x)||['diverged','behind','detached'].includes(x.scene)?'warn':'status')+'">'+sync(x)+'</span></button>').join('')
+ const tip={behind:'请先将本地分支同步到远端最新提交。',diverged:'请先整合本地与远端的提交。',detached:'请先在该仓库检出要发起 MR 的本地分支。'}[r.scene]||''
+ const branchInfo='<div class="context"><p>当前检出　<code class="branch">'+checkedBranch(r)+'</code>　<code>'+r.sha+'</code></p><p>上游分支　<code>'+(['new','detached'].includes(r.scene)?'无':'origin/'+r.branch)+'</code></p><p>同步状态　<b>'+sync(r)+'</b></p><p>工作目录　'+(r.dirty?r.dirty+' 个文件有未提交改动（本次推送仅包含 Git 提交）':'干净')+'</p></div>'
+ const commits=pending(r)?'<details open><summary>待推送的提交 · 2</summary><small><code>'+r.sha+'</code>　'+r.commits[0]+'<br><code>b71d340</code>　'+r.commits[1]+'</small></details>':''
+ const form='<label>目标分支<select id="target">'+r.targets.filter(t=>t!==r.branch).map(t=>'<option>'+t+'</option>').join('')+'</select></label><label>合并请求标题<input id="title" maxlength="256"></label><label>描述 <small>（选填）</small><textarea id="desc"></textarea></label>'
+ const result=r.result==='partial'?'<p class="warn">分支已推送，创建失败。重试时先核对已有 MR。</p>':r.result?'<p class="status">'+(r.result==='detail'?'合并请求详情 · 评审中':r.result==='existing'?'已找到已有 MR':'合并请求已创建')+'　'+mr+'</p><p>'+escapeText(r.title)+'</p><code>'+r.branch+' → '+r.target+'</code>':''
+ const done=r.result&&r.result!=='partial'
+ byId('inline').innerHTML='<section class="sheet"><div class="head line spread"><h2>发起合并请求</h2><button id="close" aria-label="关闭">×</button></div><div class="cols"><section class="repos"><h3>HIS 工作区 · 3 个仓库</h3>'+rows+'</section><section class="fields"><h3>'+r.name+'</h3><small>Codeup · hospital / '+r.name+'</small>'+branchInfo+commits+result+(done?'':form)+(tip?'<p class="warn">'+tip+'</p>':'')+'</section></div><footer><small>本次仓库 · '+r.name+'</small><button id="back">'+(done?'返回工作区':'取消')+'</button><button id="submit" class="primary">'+(done?'查看 MR '+mr:r.result==='partial'?'核对并重试':found?'查看已有 MR '+mr:pending(r)?'推送并创建合并请求':'创建合并请求')+'</button></footer></section>'
+ document.querySelectorAll('[data-index]').forEach(b=>b.onclick=()=>{selected=Number(b.dataset.index);draw()})
+ function validate(){byId('submit').disabled=disabled||(!found&&!r.title.trim())||r.result==='detail'}
+ if(!done){
+   byId('target').value=r.target;byId('target').onchange=e=>{r.target=e.target.value;r.result='';draw()}
+   byId('title').value=r.title;byId('title').oninput=e=>{r.title=e.target.value;validate()}
+   byId('desc').value=r.description;byId('desc').oninput=e=>r.description=e.target.value
+ }
+ byId('back').onclick=byId('close').onclick=()=>{opened=false;draw()}
+ byId('submit').onclick=()=>{
+   if(done)r.result='detail'
+   else if(r.scene==='partial'){r.scene='synced';r.result='partial'}
+   else if(found)r.result='existing'
+   else{r.mrs.set(r.target,mr);r.result='created';r.scene='synced'}
+   draw()
+ }
+ validate()
+}
+byId('scene').onchange=e=>{const r=repos[selected];r.scene=e.target.value;r.result='';r.mrs.clear();if(r.scene==='existing')r.mrs.set(r.target,'!'+(128+selected));draw()}
+byId('open').onclick=()=>{opened=true;repos[selected].result='';draw()}
+draw()
+</script></body></html>

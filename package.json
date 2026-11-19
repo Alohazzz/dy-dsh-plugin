@@ -1,23 +1,39 @@
 {
   "name": "dy-dsh-plugin",
   "version": "0.1.6",
-  "description": "面向 DeepSeek Harness 的云效议题与交付计划插件",
+  "description": "面向 DeepSeek Harness 的研发工作台，提供云效议题、交付计划和公司技能管理",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Alohazzz/dy-dsh-plugin.git"
   },
-  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "type": "module",
   "exports": {
     ".": "./dist/host.js",
     "./client": "./dist/client.js",
     "./package.json": "./package.json"
   },
-  "files": ["dist", "cordis.patch.yml", "README.md"],
-  "engines": { "node": ">=24", "dsh": ">=0.2.2-rc.3 <0.3.0" },
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=24",
+    "dsh": ">=0.2.2-rc.3 <0.3.0"
+  },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
-    "client": { "platform": "web", "immediately": true, "inject": [] }
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
   },
   "scripts": {
     "build": "node build.mjs",
@@ -29,7 +45,11 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
+    "dompurify": "^3.4.18",
     "esbuild": "^0.27.0",
-    "typescript": "~5.9.3"
+    "marked": "^18.2.1",
+    "parse5": "^8.1.1",
+    "typescript": "~5.9.3",
+    "yaml": "^2.9.1"
   }
 }
