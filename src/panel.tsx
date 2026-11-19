@@ -146,6 +146,29 @@ window.__ModuleLoader__.load({
       </>
     }
 
+    const statusTones: Record<string, string> = {
+      待处理: 'blue', 待确认: 'blue', 已确认: 'blue',
+      待开发: 'green', 开发中: 'green', 开发完成: 'green', 待测试: 'green', 测试中: 'green', 测试完成: 'green',
+      测试打回: 'orange', 发布中: 'orange', 验收完成: 'orange', 触发重置: 'orange', 发布完成: 'orange',
+    }
+    function StatusBadge({ name }: { name: string }) {
+      return <span className="dy-yx-status" data-tone={statusTones[name] || 'grey'}>{name}</span>
+    }
+
+    const actionPaths = {
+      start: 'M4 2.5 13 8l-9 5.5z',
+      resume: 'M6 3H3v10h10v-3 M7 9l6-6 M9 3h4v4',
+      add: 'M2 4h8 M2 8h5 M2 12h5 M11.5 7v7 M8 10.5h7',
+      discuss: 'M2 3h12v8H7l-4 3v-3H2z',
+      preview: 'M4 2h6l3 3v9H4z M9 2v4h4 M6.5 9h4 M6.5 11.5h3',
+      move: 'M2 5h11l-3-3 M14 11H3l3 3',
+      refresh: 'M13 6a5.3 5.3 0 1 0 .2 4 M13 2v4H9',
+    }
+    function ActionIcon({ name }: { name: keyof typeof actionPaths }) {
+      return <svg className="dy-yx-action-icon" aria-hidden="true" viewBox="0 0 16 16" fill="none"
+        stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d={actionPaths[name]} /></svg>
+    }
+
     function Panel({ ctx }: { ctx: { uiWorkspace: Navigation } }) {
       const [meta, setMeta] = useState<Meta>()
       const [metaError, setMetaError] = useState('')
@@ -317,8 +340,8 @@ window.__ModuleLoader__.load({
           {notice && <div className="dy-yx-notice" role="status">{notice}</div>}
           {marked.length > 0 && <div className="dy-yx-bar dy-yx-selection">
             <strong>已选 {marked.length} 项</strong>
-            <button disabled={!workspaceId} onClick={() => setModal({ kind: 'discuss', issues: marked })}>发起讨论</button>
-            <button disabled={!workspaceId} onClick={() => setModal({ kind: 'add', issues: marked })}>添加到计划</button>
+            <button disabled={!workspaceId} onClick={() => setModal({ kind: 'discuss', issues: marked })}><ActionIcon name="discuss" />发起讨论</button>
+            <button disabled={!workspaceId} onClick={() => setModal({ kind: 'add', issues: marked })}><ActionIcon name="add" />添加到计划</button>
             <button onClick={() => setMarked([])}>取消选择</button>
           </div>}
           <div className="dy-yx-layout" data-detail={Boolean(active)}>
@@ -337,16 +360,16 @@ window.__ModuleLoader__.load({
                 <div>
                   <button className="dy-yx-title" onClick={() => setActive(issue)}>{issue.title || issue.reference}</button>
                   <div className="dy-yx-meta"><a href={issue.url} target="_blank" rel="noreferrer" title="在云效打开">{issue.reference}</a>
-                    <span>{categories[issue.category] || issue.category}</span><span className="dy-yx-tag">{issue.state.name}</span>
+                    <span>{categories[issue.category] || issue.category}</span><StatusBadge name={issue.state.name} />
                     {[issue.product, issue.priority, issue.owner, issue.created && '创建 ' + issue.created].filter(Boolean).map((item, i) => <span key={i}>{item}</span>)}
                     {issue.deadline && <span className={issue.deadline < today && !['已完成','已关闭'].includes(issue.state.name) ? 'dy-yx-overdue' : ''}>截止 {issue.deadline}</span>}
                     {issue.plan && <span className="dy-yx-tag">{issue.plan}</span>}
                   </div>
                   {marked.length === 0 && <div className="dy-yx-actions">
                     <button disabled={!workspaceId} onClick={() => issue.sessionId ? ctx.uiWorkspace.openSession(issue.sessionId) : openModal('start', issue)}>
-                      {issue.sessionId ? '返回绑定会话' : '直接开工'}</button>
-                    {!issue.plan && <button disabled={!workspaceId} onClick={() => setModal({ kind: 'add', issues: [issue] })}>加到计划</button>}
-                    {!issue.plan && !issue.sessionId && <button disabled={!workspaceId} onClick={() => setModal({ kind: 'discuss', issues: [issue] })}>发起讨论</button>}
+                      <ActionIcon name={issue.sessionId ? 'resume' : 'start'} />{issue.sessionId ? '返回绑定会话' : '直接开工'}</button>
+                    {!issue.plan && <button disabled={!workspaceId} onClick={() => setModal({ kind: 'add', issues: [issue] })}><ActionIcon name="add" />加到计划</button>}
+                    {!issue.plan && !issue.sessionId && <button disabled={!workspaceId} onClick={() => setModal({ kind: 'discuss', issues: [issue] })}><ActionIcon name="discuss" />发起讨论</button>}
                   </div>}
                 </div>
               </article>)}
@@ -361,13 +384,13 @@ window.__ModuleLoader__.load({
                 <button className="dy-yx-back" onClick={() => setActive(undefined)}>返回列表</button>
                 <h2>{active.title}</h2>
                 <div className="dy-yx-meta"><a href={active.url} target="_blank" rel="noreferrer">在云效打开 · {active.reference}</a>
-                  <span className="dy-yx-tag">{detail?.state.name || active.state.name}</span></div>
+                  <StatusBadge name={detail?.state.name || active.state.name} /></div>
                 <div className="dy-yx-actions">
                   {detail?.sessionId
-                    ? <button className="dy-yx-primary" onClick={() => ctx.uiWorkspace.openSession(detail.sessionId!)}>返回绑定会话</button>
-                    : <button className="dy-yx-primary" disabled={!workspaceId} onClick={() => openModal('start', active)}>直接开工</button>}
-                  <button disabled={!detail?.sessionId} onClick={() => openModal('publish', active)}>回写预览</button>
-                  <button onClick={() => openModal('move', active)}>{(pending[active.id] || detail?.pendingTarget) ? '回查状态' : '状态流转'}</button>
+                    ? <button className="dy-yx-primary" onClick={() => ctx.uiWorkspace.openSession(detail.sessionId!)}><ActionIcon name="resume" />返回绑定会话</button>
+                    : <button className="dy-yx-primary" disabled={!workspaceId} onClick={() => openModal('start', active)}><ActionIcon name="start" />直接开工</button>}
+                  <button disabled={!detail?.sessionId} onClick={() => openModal('publish', active)}><ActionIcon name="preview" />回写预览</button>
+                  <button onClick={() => openModal('move', active)}><ActionIcon name={pending[active.id] || detail?.pendingTarget ? 'refresh' : 'move'} />{(pending[active.id] || detail?.pendingTarget) ? '回查状态' : '状态流转'}</button>
                 </div>
                 {detailError && <p role="alert">{detailError} <button onClick={() => refresh(value => value + 1)}>重试读取</button></p>}
                 {!detail && !detailError && <p role="status">正在读取议题详情…</p>}

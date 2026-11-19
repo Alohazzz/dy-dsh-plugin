@@ -136,9 +136,25 @@ main.dy-yx > * { flex-shrink: 0; }
 .dy-yx-row { padding: .85rem 1rem; cursor: pointer; }
 .dy-yx-row:hover:not([aria-current=true]) { background: var(--yx-raised); }
 .dy-yx-row[aria-current=true] { box-shadow: inset 3px 0 var(--dsw-alias-link, LinkText); }
-.dy-yx-row .dy-yx-actions { gap: .2rem; }
-.dy-yx-row .dy-yx-actions button { border-color: transparent; font-size: .8rem; padding: .15rem .4rem; color: var(--yx-muted); }
+.dy-yx-row .dy-yx-actions { gap: .35rem; margin-top: .4rem; }
+.dy-yx :is(.dy-yx-actions, .dy-yx-selection) button:has(.dy-yx-action-icon) {
+  display: inline-flex; align-items: center; justify-content: center; gap: .32rem;
+}
+.dy-yx-action-icon { width: 1em; height: 1em; flex: none; }
+.dy-yx-row .dy-yx-actions button {
+  min-height: 1.5rem; padding: .1rem .45rem; font-size: .8rem;
+  background: var(--yx-raised); color: var(--yx-muted);
+}
 .dy-yx-row .dy-yx-actions button:first-child:enabled { color: var(--dsw-alias-link, LinkText); }
+.dy-yx-row .dy-yx-actions button:enabled:hover { border-color: currentColor; background: var(--yx-selected); }
+.dy-yx :is(.dy-yx-actions, .dy-yx-selection) button:disabled { opacity: .55; }
+.dy-yx-status {
+  border-radius: .3rem; padding: .05rem .4rem; font-weight: 550;
+  color: light-dark(#57606a, #9aa3b2); background: light-dark(#57606a1f, #949eaa2e);
+}
+.dy-yx-status[data-tone=blue] { color: light-dark(#1664d9, #79b0ff); background: light-dark(#1677ff1f, #5891ff2e); }
+.dy-yx-status[data-tone=green] { color: light-dark(#0f8a3d, #57c585); background: light-dark(#1ba85724, #2eb8722e); }
+.dy-yx-status[data-tone=orange] { color: light-dark(#c26a00, #ffab52); background: light-dark(#ff880024, #ff9a3c2e); }
 .dy-yx-meta { gap: .28rem .55rem; font-size: .76rem; }
 .dy-yx-tag { border-radius: 1rem; padding-inline: .5rem; }
 .dy-yx-detail { padding: 1.15rem 1.3rem; }
