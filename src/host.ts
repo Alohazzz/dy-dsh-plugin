@@ -3,13 +3,15 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { createConnectionSettings, type CredentialStore } from './connection-settings.ts'
 import { createHandler, descriptionOf } from './yunxiao.mjs'
-import { createWorkflow, label, projectOf } from './workflow.ts'
+import { createWorkflow, executionSkill, label, projectOf } from './workflow.ts'
 import type { Details, Issue, IssueKey, Meta, Option, Search } from './contracts.ts'
 
 export const name = 'dy-yunxiao'
 export const inject = ['commands', 'connection', 'workspaceRegistry', 'sessionController', 'agentPresets', 'permissionPresets', 'credentials']
 type Workspace = { id: string; path: string; title: string }
 type Context = {
+  inject(names: string[], install: (scope: { skills: { register(skill: typeof executionSkill): unknown } }) => void): unknown
+  get(name: 'sessionSkillCatalog'): { list(request: { sessionId: string }, signal: AbortSignal): Promise<{ skills: { name: string }[] }> } | undefined
   credentials: CredentialStore
   commands: { register(value: { name: string; description: string; input: { hint: string }; handler: ReturnType<typeof createHandler> }): void }
   connection: { fetch: { register(route: {
@@ -76,9 +78,20 @@ export function apply(ctx: Context) {
   const recentIssues = new Map<string, Issue>()
   const deadlineFields = new Map<string, string>()
   const settings = createConnectionSettings(ctx.credentials)
+  ctx.inject(['skills'], scope => { scope.skills.register(executionSkill) })
   const workflow = createWorkflow({
     home, client: settings.client,
     host: {
+      async hasExecutionSkill(sessionId) {
+        const catalog = ctx.get('sessionSkillCatalog')
+        if (!catalog) return false
+        try {
+          const result = await catalog.list({ sessionId }, AbortSignal.timeout(10_000))
+          return result.skills.some(skill => skill.name === executionSkill.name)
+        } catch {
+          return false
+        }
+      },
       create: ({ sessionId, cwd, workspaceId, agentPreset }) => ctx.sessionController.create({
         sessionId, agentPreset, ...(workspaceId ? { workspaceId } : { cwd }),
       }),

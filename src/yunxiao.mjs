@@ -191,9 +191,10 @@ export function createHandler({
       if (action === 'start') {
         if (startBound) {
           if (!binding && agent.status !== 'idle') throw new Error('请在 DSH 会话空闲时开始议题')
-          const issue = await client.find(arg, signal)
+          const sameIssue = binding?.organization === client.organization && [binding.id, binding.reference].includes(arg)
+          const issue = sameIssue && binding.project ? { id: binding.id, spaceId: binding.project } : await client.find(arg, signal)
           const result = await startBound({ id: issue.id, project: issue.spaceId || issue.projectId || issue.space?.id || client.project || "",
-            cwd: agent.session.header.cwd, sessionId: binding ? undefined : agent.session.id })
+            cwd: agent.session.header.cwd, sessionId: !binding || sameIssue ? agent.session.id : undefined })
           return success(`已绑定 ${result.reference}。会话 ID：${result.sessionId}`)
         }
         if (binding) throw new Error('当前会话已绑定议题，请为新议题打开新会话')

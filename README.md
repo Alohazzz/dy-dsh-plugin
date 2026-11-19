@@ -50,7 +50,11 @@ $bundle = (Resolve-Path './dy-dsh-plugin-0.1.5.tgz').Path
 | `/yunxiao transition <状态 ID>` | 预览状态流转 |
 | `/yunxiao transition <状态 ID> <预览码>` | 确认流转并查看核对结果 |
 
-议题材料和交付稿保存在当前工作区的 `.dsh/yunxiao/`，请在业务仓库配置本地 Git 排除。计划、会话绑定和回写回执保存在 DSH 用户目录的 `dy-yunxiao/` 下。
+确认开工后，插件在当前工作区的 `.dsh/yunxiao/` 会话目录保存议题原文 `issue.md` 和开工清单 `task.json`。清单记录议题编号、执行方式、发起人补充和交付稿路径。派发中断时，再次开工会沿用首次确认的材料、会话和首条消息。
+
+目标会话能发现插件自带的 `/yunxiao-dsh-execute` 时，插件显式调用它；技能不可用时，首条消息直接携带执行约定。用户要求提交代码时，提交信息须带议题编号。完成后从同目录的 `discussion.md` 预览回写。
+
+请在业务仓库为 `.dsh/yunxiao/` 配置本地 Git 排除。计划、会话绑定和回写回执保存在 DSH 用户目录的 `dy-yunxiao/` 下。
 
 ## 构建
 
