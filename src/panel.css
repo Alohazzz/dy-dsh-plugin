@@ -145,6 +145,7 @@
 .dy-sk-markdown { line-height: 1.75; }
 .dy-sk-markdown pre { padding: .65rem; background: var(--yx-raised); border: 1px solid var(--yx-edge); overflow: auto; }
 .dy-sk-markdown table { display: block; overflow: auto; }
+.dy-mr-snapshot-path { overflow-wrap: anywhere; }
 .dy-sk-dialog form > label { display: grid; gap: .35rem; margin: .75rem 0; }
 @container (min-width: 76rem) {
   .dy-sk-detail-body {

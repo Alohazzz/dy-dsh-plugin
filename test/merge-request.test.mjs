@@ -7,6 +7,32 @@ import { join } from 'node:path'
 import { deliveryOptions, mrRepos, mrPreview, submitMr } from '../src/merge-request.ts'
 import { codeupApi } from '../src/codeup.mjs'
 import { apply } from '../src/host.ts'
+
+test('Codeup review keeps pinned supplement refs and does not fetch refs from another MR', async () => {
+  const id = 2
+  const source = 'a'.repeat(40)
+  const target = 'b'.repeat(40)
+  const remote = 'https://codeup.aliyun.com/org/review.git'
+  const calls = []
+  const api = codeupApi(async (path, _signal, method) => {
+    calls.push([path, method])
+    if (path.endsWith('/repositories/2')) {
+      return { id, pathWithNamespace: 'org/review', httpUrlToRepo: remote }
+    }
+    return [
+      { relatedMergeItemType: 'MERGE_SOURCE', versionNo: 1, commitId: target, ref: 'refs/changes/5/1' },
+      { relatedMergeItemType: 'MERGE_SOURCE', versionNo: 2, commitId: source, ref: 'refs/changes/9/2' },
+      { relatedMergeItemType: 'MERGE_TARGET', versionNo: 1, commitId: target, ref: 'refs/changes/5/target/1' },
+    ]
+  }, 'org')
+  assert.deepEqual(await api.reviewTarget({ repositoryId: id, localId: 5 }), {
+    remote, source: { sha: source, ref: source, version: 2 }, target: { sha: target, ref: 'refs/changes/5/target/1', version: 1 },
+  })
+  assert.deepEqual(calls, [
+    ['/oapi/v1/codeup/organizations/org/repositories/2', undefined],
+    ['/oapi/v1/codeup/organizations/org/repositories/2/changeRequests/5/diffs/patches', undefined],
+  ])
+})
 import { createWorkflow } from '../src/workflow.ts'
 
 test('Codeup resolves full paths, matches same-repository open MRs and creates with numeric IDs', async () => {
@@ -87,11 +113,15 @@ test('plan association is verified by the host and survives a restart', async t 
   })
   function host() {
     let endpoint
+    let toolGuard
     apply({
       inject() {}, on() {}, commands: { register() {} }, credentials: { readRecord: async () => auth },
+      tools: { guard(check) { toolGuard = check } },
       workspaceRegistry: { get: id => id === 'w' ? workspace : undefined, list: () => [workspace] },
       connection: { fetch: { register(route) { if (route.path === '/api/dy-yunxiao') endpoint = route.fetch } } },
     })
+    assert.match(toolGuard({ agent: { id: 'dy-mr-review-test' } }), /只读审查/)
+    assert.equal(toolGuard({ agent: { id: 'session-normal' } }), undefined)
     return async (method, input) => (await endpoint(new Request('http://localhost/api/dy-yunxiao', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ method, input }),
     }))).json()

@@ -6,13 +6,16 @@ import type { createClient } from './yunxiao-client.mjs'
 
 type Api = ReturnType<typeof createClient>['codeup']
 const exec = promisify(execFile)
-export async function git(cwd: string, args: string[], optional = false) {
+export async function git(cwd: string, args: string[], optional = false, localOnly = false) {
   try {
     return (await exec('git', args, { cwd, windowsHide: true, timeout: 90_000, maxBuffer: 16 << 20,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never' } })).stdout.trimEnd()
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'Never',
+        ...(localOnly ? { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' } : {}) } })).stdout.trimEnd()
   } catch (error) {
     if (optional && (error as { code?: number }).code === 1) return ''
-    throw new Error('Git ' + args[0] + ' 失败，请检查仓库、网络和 Git 访问权限')
+    let command = 0
+    while (args[command] === '-c') command += 2
+    throw new Error('Git ' + args[command] + ' 失败，请检查仓库、网络和 Git 访问权限')
   }
 }
 

@@ -1,5 +1,7 @@
 import type * as ReactType from 'react'
-import type { Meta, MrRef, Plan, PlanDetails, PlanIssue, PlanKey, PlanRow } from './contracts.ts'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
+import type { Meta, MrRef, MrReviewView, Plan, PlanDetails, PlanIssue, PlanKey, PlanRow } from './contracts.ts'
 import type { codeupApi } from './codeup.mjs'
 import type { deliveryOptions, mrRepos } from './merge-request.ts'
 import { createMrPanel, type Rpc } from './mr-panel.tsx'
@@ -21,7 +23,7 @@ const planStatus = (plan: Plan, status?: string) => !plan.delivery ? '分支待�
   status === 'MERGED' ? '代码已合并' : states[status || 'UNAVAILABLE'] || 'MR 状态未知'
 
 export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
-  const { useEffect, useRef, useState } = React
+  const { useEffect, useMemo, useRef, useState } = React
   const MrPanel = createMrPanel(React, rpc)
 
   function useRead<T>(method: string, input: object | undefined, revision = 0) {
@@ -317,7 +319,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
   function RequestDetail({ reference, origin, back, openPlan }: {
     reference: MrRef; origin: Queue | 'plan'; back(): void; openPlan(plan: PlanKey): void
   }) {
-    const result = useRead<{ mr: Mr; plans: PlanRow[]; planError: string }>('workbenchMr', reference)
+    const result = useRead<{ mr: Mr; plans: PlanRow[]; planError: string; reviewSupported?: boolean }>('workbenchMr', reference)
     const mr = result.value?.mr
     return <main className="dy-yx dy-delivery dy-delivery-stack">
       <header><div><button className="dy-delivery-link" onClick={back}>返回{origin === 'plan' ? '计划' : queues[origin]}</button>
@@ -341,8 +343,91 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           result.value?.plans.length ? <ul>{result.value.plans.map(row =>
             <li key={JSON.stringify(planKey(row))}><button className="dy-delivery-link" onClick={() => openPlan(planKey(row))}>{row.plan.name}</button>
               <small> · {row.projectName} · {row.workspaceName}</small></li>)}</ul> : <p>尚未关联交付计划</p>}
-      </section></>}
+      </section>{result.value?.reviewSupported ? <ReviewPanel reference={reference} /> :
+        <section className="dy-delivery-card dy-delivery-section" aria-label="AI 合并审查">
+          <h3>AI 合并审查</h3>
+          <p role="status">当前 DSH 宿主尚未加载审查接口。请重启此 DSH 实例后刷新页面。</p>
+        </section>}</>}
     </main>
+  }
+
+  function ReviewPanel({ reference }: { reference: MrRef }) {
+    const { repositoryId, localId } = reference
+    const [value, setValue] = useState<MrReviewView>()
+    const [readError, setReadError] = useState('')
+    const [actionError, setActionError] = useState('')
+    const [source, setSource] = useState('')
+    const [busy, setBusy] = useState<'pull' | 'review'>()
+    const [revision, refresh] = useState(0)
+    const snapshot = value?.snapshot
+    const review = value?.review
+    const selected = value?.sources.find(row => row.id === source) ?? value?.sources[0]
+    const report = useMemo(() => review?.markdown && DOMPurify.sanitize(marked.parse(review.markdown, { async: false }), {
+      ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'strong', 'em', 'ul', 'ol', 'li', 'code', 'pre', 'blockquote',
+        'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'br'],
+      ALLOWED_ATTR: [],
+    }), [review?.markdown])
+
+    useEffect(() => {
+      const abort = new AbortController()
+      let timer: ReturnType<typeof setTimeout>
+      async function load() {
+        try {
+          const result = await rpc<MrReviewView>('mrReview', { repositoryId, localId }, abort.signal)
+          if (abort.signal.aborted) return
+          setReadError('')
+          setValue(result)
+          if (result.review?.status === 'running') timer = setTimeout(load, 1200)
+        } catch (error) {
+          if (!abort.signal.aborted) setReadError(errorText(error))
+        }
+      }
+      void load()
+      return () => { abort.abort(); clearTimeout(timer) }
+    }, [repositoryId, localId, revision])
+
+    async function run(action: 'pull' | 'review') {
+      setBusy(action)
+      setActionError('')
+      try {
+        if (action === 'pull') await rpc('pullMrSnapshot', { repositoryId, localId })
+        if (action === 'review' && snapshot && selected) {
+          await rpc('startMrReview', { repositoryId, localId, snapshotId: snapshot.id, sourceId: selected.id })
+        }
+      } catch (error) {
+        setActionError(errorText(error))
+      } finally {
+        setBusy(undefined)
+        refresh(n => n + 1)
+      }
+    }
+
+    const blocked = !!busy || review?.status === 'running'
+    return <section className="dy-delivery-card dy-delivery-section" aria-label="AI 合并审查">
+      <h3>AI 合并审查</h3>
+      <div className="dy-yx-actions">
+        <button disabled={blocked} onClick={() => void run('pull')}>
+          {busy === 'pull' ? '正在拉取…' : snapshot ? '刷新本地快照' : '拉取 MR 到本地'}
+        </button>
+        {value && value.sources.length > 1 && <label>审查技能源 <select value={selected?.id} disabled={blocked}
+          onChange={event => setSource(event.target.value)}>
+          {value.sources.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+        </select></label>}
+        <button className="dy-yx-primary" disabled={blocked || !snapshot || !selected} onClick={() => void run('review')}>
+          {busy === 'review' ? '正在启动…' : review?.status === 'complete' ? '重新审查' : '运行只读审查'}
+        </button>
+      </div>
+      {readError && <Problem error={readError} retry={() => refresh(n => n + 1)} />}
+      {actionError && <p role="alert" className="dy-yx-error">{actionError}</p>}
+      {value?.sources.length === 0 && <p>请在技能管理绑定包含 merge-code-review 和公司开发手册的技能源。</p>}
+      {snapshot && <div className="dy-yx-meta">
+        <p>补丁版本 {snapshot.version} · <code>{snapshot.source.slice(0, 12)}</code> → <code>{snapshot.target.slice(0, 12)}</code></p>
+        <p>本地快照 <code className="dy-mr-snapshot-path">{snapshot.directory}</code></p>
+      </div>}
+      {review?.status === 'running' && <p role="status">正在生成审查报告…</p>}
+      {review?.error && <p role="alert" className="dy-yx-error">{review.error}</p>}
+      {report && <article className="dy-sk-markdown" aria-label="审查报告" dangerouslySetInnerHTML={{ __html: report }} />}
+    </section>
   }
 
   return { Plans, Requests, RequestDetail }

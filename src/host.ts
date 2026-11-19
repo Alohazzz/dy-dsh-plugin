@@ -1,4 +1,5 @@
 import { deliveryOptions, mrPreview, mrRepos, submitMr, workspaceRepository, type MrInput } from './merge-request.ts'
+import { createMrReviews, reviewSessionPrefix } from './mr-review.ts'
 import { issueMaterials } from './issue-materials.ts'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -13,7 +14,7 @@ import { createSkillInstallations, skillProjectRoot } from './skill-installation
 import { dshSkillTarget, type SkillSourceInput, type SkillTarget } from './skill-catalog.ts'
 
 export const name = 'dy-yunxiao'
-export const inject = ['commands', 'connection', 'workspaceRegistry', 'sessionController', 'agentPresets', 'permissionPresets', 'credentials', 'agents']
+export const inject = ['commands', 'connection', 'workspaceRegistry', 'sessionController', 'agentPresets', 'permissionPresets', 'credentials', 'agents', 'tools']
 type Workspace = { id: string; path: string; title: string }
 type SessionSummary = {
   sessionId: string
@@ -21,9 +22,11 @@ type SessionSummary = {
   formatStatus?: 'current' | 'migration-required'
   projections?: { values: { title?: string | null } }
 }
+type ReviewWait = Awaited<ReturnType<Parameters<typeof createMrReviews>[4]['wait']>>
 type Context = {
   emit(event: 'plugin-manager/changed', change: { reason: 'plugin' }): void
   on(event: 'agent/created', listener: (event: { agent: { id: string } }) => void): void
+  tools: { guard(check: (execution: { agent?: { id: string } }) => string | undefined): unknown }
   inject(names: string[], install: (scope: { skills: {
     register(skill: typeof executionSkill): unknown
     registerProvider(factory: ReturnType<typeof createSkillInstallations>['provider']): unknown
@@ -41,7 +44,8 @@ type Context = {
     list(input: Record<string, never>, signal: AbortSignal): Promise<{ items: SessionSummary[] }>
     create(input: { sessionId: string; cwd?: string; workspaceId?: string; agentPreset?: string }): Promise<unknown>
     prompt(input: { sessionId: string; requestId: string; mode: 'queue'; content: { type: 'text'; text: string }[] }, signal: AbortSignal): Promise<unknown>
-    resolveAgent(id: string): Promise<{ agent?: { session: unknown } }>
+    resolveAgent(id: string): Promise<{ agent?: { session: { append(event: string, payload: object): unknown } } }>
+    wait(input: { sessionId: string; timeoutMs: number; maxMessages: number }, signal: AbortSignal): Promise<ReviewWait>
   }
   agentPresets: { remoteExportList(): Promise<{ presets: { id: string; name?: string; broken?: string }[] }> }
   permissionPresets?: { names: string[]; optionOf(name: string): { label: string }; set(session: unknown, name: string): void }
@@ -100,23 +104,40 @@ export function apply(ctx: Context) {
     ctx.emit('plugin-manager/changed', { reason: 'plugin' })
   })
   ctx.on('agent/created', ({ agent }) => { void installations.agentStarted(agent.id).catch(() => {}) })
+  ctx.tools.guard(({ agent }) => agent?.id.startsWith(reviewSessionPrefix) ?
+    'MR 只读审查会话禁用工具，仅使用宿主提供的 Git 证据。' : undefined)
   ctx.inject(['skills'], scope => {
     scope.skills.register(executionSkill)
     scope.skills.registerProvider(installations.provider)
   })
+  async function hasSessionSkill(sessionId: string, name: string) {
+    const catalog = ctx.get('sessionSkillCatalog')
+    if (!catalog) return false
+    try {
+      const result = await catalog.list({ sessionId }, AbortSignal.timeout(10_000))
+      return result.skills.some(skill => skill.name === name)
+    } catch {
+      return false
+    }
+  }
+  const reviews = createMrReviews(home, settings.client, skillSources.list, installations, {
+    async create(sessionId, cwd) {
+      await ctx.sessionController.create({ sessionId, cwd, agentPreset: 'standard' })
+      const { agent } = await ctx.sessionController.resolveAgent(sessionId)
+      if (!agent) throw new Error('无法启动审查会话')
+      agent.session.append('sandbox/mode', { mode: 'read-only' })
+      agent.session.append('approval/policy', { policy: 'never' })
+    },
+    hasSkill: sessionId => hasSessionSkill(sessionId, 'merge-code-review'),
+    prompt: (sessionId, text) => ctx.sessionController.prompt({
+      sessionId, requestId: sessionId, mode: 'queue', content: [{ type: 'text', text }],
+    }, AbortSignal.timeout(60_000)),
+    wait: sessionId => ctx.sessionController.wait({ sessionId, timeoutMs: 1200, maxMessages: 1 }, AbortSignal.timeout(5_000)),
+  })
   const workflow = createWorkflow({
     home, client: settings.client,
     host: {
-      async hasExecutionSkill(sessionId) {
-        const catalog = ctx.get('sessionSkillCatalog')
-        if (!catalog) return false
-        try {
-          const result = await catalog.list({ sessionId }, AbortSignal.timeout(10_000))
-          return result.skills.some(skill => skill.name === executionSkill.name)
-        } catch {
-          return false
-        }
-      },
+      hasExecutionSkill: sessionId => hasSessionSkill(sessionId, executionSkill.name),
       create: ({ sessionId, cwd, workspaceId, agentPreset }) => ctx.sessionController.create({
         sessionId, agentPreset, ...(workspaceId ? { workspaceId } : { cwd }),
       }),
@@ -300,6 +321,9 @@ export function apply(ctx: Context) {
   }
 
   const methods = {
+    pullMrSnapshot: reviews.pull,
+    startMrReview: reviews.start,
+    mrReview: reviews.status,
     mrRepos: ({ workspaceId }: { workspaceId: string }) => mrRepos(workspace(workspaceId).path),
     async mrPreview({ workspaceId, key }: { workspaceId: string; key: string }) {
       return mrPreview(workspace(workspaceId).path, key, (await settings.client()).codeup)
@@ -385,7 +409,7 @@ export function apply(ctx: Context) {
             row.plan.delivery.mr.localId === input.localId), error: '',
         }), () => ({ rows: [], error: '关联计划读取失败' })),
       ])
-      return { mr, plans: plans.rows, planError: plans.error }
+      return { mr, plans: plans.rows, planError: plans.error, reviewSupported: true }
     },
     skillSources: skillSources.list,
     bindSkillSource: (input: SkillSourceInput) => skillSources.bind(input),

@@ -18,6 +18,13 @@ export type Meta = {
   projects: Option[]; workspaces: Option[]; presets: Option[]; permissions: Option[]
 }
 export type MrRef = { repositoryId: number; localId: number }
+export type MrSnapshot = { id: string; source: string; target: string; version: number; directory: string }
+export type MrReviewSource = { id: string; label: string }
+export type MrReviewView = {
+  sources: MrReviewSource[]
+  snapshot?: MrSnapshot
+  review?: { status: 'running' | 'complete' | 'failed'; markdown?: string; error?: string }
+}
 export type PlanDelivery = { key: string; repositoryId: number; path: string; target: string; mr?: MrRef }
 export type PlanKind = 'feature' | 'fix' | 'patch' | 'project' | 'hotfix'
 export type Plan = {

@@ -102,7 +102,7 @@ export function createSkillInstallations(home: string, getAgent: (id: string) =>
         const sameTarget = row.target.kind === target.kind && (target.kind === 'agent' ? row.target.id === target.id :
           normalize(row.target.directory!) === normalize(target.directory!))
         if (!sameTarget || row.name !== skill.name) continue
-        if (row.sourceId === source.id && row.path === skill.path && await intact(row)) return
+        if (row.sourceId === source.id && row.path === skill.path && await intact(row)) return row.id
         throw new Error('该目标已有同名技能，请先卸载现有安装')
       }
       await mkdir(root, { recursive: true })
@@ -120,6 +120,7 @@ export function createSkillInstallations(home: string, getAgent: (id: string) =>
         await rename(pending, join(root, id))
         invalidate()
         catalogChanged()
+        return id
       } finally {
         await rm(pending, { recursive: true, force: true })
       }
@@ -193,5 +194,11 @@ export function createSkillInstallations(home: string, getAgent: (id: string) =>
     if ((await records()).some(row => row.target.kind === 'agent' && row.target.id === id)) catalogChanged()
   }
 
-  return { install, uninstall, list, provider, agentStarted }
+  async function readResource(id: string, file: string) {
+    const row = (await records()).find(item => item.id === id && item.files.includes(file))
+    if (!row || !await intact(row)) throw new Error('已安装技能缺少配套文件')
+    return readFile(join(directory(id), file), 'utf8')
+  }
+
+  return { install, uninstall, list, provider, agentStarted, readResource }
 }

@@ -78,6 +78,31 @@ export function codeupApi(call, organization) {
       }
       return requestRow(item, repositoryId)
     },
+    async reviewTarget({ repositoryId, localId }) {
+      if (![repositoryId, localId].every(id => Number.isSafeInteger(id) && id > 0)) throw new Error('无效的合并请求编号')
+      const repositoryPath = base + '/repositories/' + repositoryId
+      const [repository, patches] = await Promise.all([
+        call(repositoryPath),
+        call(repositoryPath + '/changeRequests/' + localId + '/diffs/patches'),
+      ])
+      const remote = repository?.httpUrlToRepo
+      if (Number(repository?.id) !== repositoryId || typeof remote !== 'string' ||
+        !remote.startsWith('https://codeup.aliyun.com/') || pathOf(remote) !== repository.pathWithNamespace ||
+        !/^[\w.-]+(?:\/[\w.-]+)+$/.test(repository.pathWithNamespace)) {
+        throw new Error('无法核对合并请求所属的 Codeup 仓库地址')
+      }
+      if (!Array.isArray(patches)) throw new Error('无法读取 Codeup 补丁集')
+      /** @param {string} type */
+      const latest = type => {
+        const patch = patches.filter(item => item?.relatedMergeItemType === type && Number.isSafeInteger(item.versionNo))
+          .sort((a, b) => b.versionNo - a.versionNo)[0]
+        if (!patch || !/^[a-f0-9]{40}$/.test(patch.commitId)) throw new Error('Codeup 补丁集缺少有效的固定提交')
+        const ref = typeof patch.ref === 'string' && /^refs\/changes\/[0-9]+\/(?:target\/)?[0-9]+$/.test(patch.ref)
+          && patch.ref.split('/')[2] === String(localId) ? patch.ref : patch.commitId
+        return { sha: patch.commitId, ref, version: patch.versionNo }
+      }
+      return { remote, source: latest('MERGE_SOURCE'), target: latest('MERGE_TARGET') }
+    },
     async create(id, source, target, title, description) {
       return receipt(await call(base + '/repositories/' + id + '/changeRequests', undefined, 'POST', {
         sourceProjectId: id, targetProjectId: id, sourceBranch: source, targetBranch: target, title, description,
