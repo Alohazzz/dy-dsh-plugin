@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
-import { YunxiaoHttpError } from '../src/yunxiao-client.mjs'
+import { createClient, YunxiaoHttpError } from '../src/yunxiao-client.mjs'
 import { createHandler, digest } from '../src/yunxiao.mjs'
 import { createWorkflow, executionSkill } from '../src/workflow.ts'
 
@@ -136,6 +136,66 @@ test('批量排期保留已成功项，重试只处理失败议题', async t => 
   assert.deepEqual(again.map(row => row.result), ['成功', '已加入'])
   assert.deepEqual(attempts, ['one','two','one'])
 })
+
+for (const scenario of ['无需完成时间', '完成时间必填且为空', '保留已有完成时间']) {
+  test('议题加入计划前写入排期字段并回查状态 · ' + scenario, async t => {
+    const cwd = await mkdtemp(join(tmpdir(), 'dy-yunxiao-workflow-'))
+    t.after(() => rm(cwd, { recursive: true, force: true }))
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-19T14:00:00+08:00') })
+    const requiresEnd = scenario !== '无需完成时间'
+    const existingEnd = scenario === '保留已有完成时间' ? '2026-11-23 00:00:00' : ''
+    const endValue = { value: existingEnd }
+    const state = {
+      id: 'issue', spaceId: 'project', workitemTypeId: 'bug',
+      status: { id: 'confirmed', name: '已确认' },
+      customFieldValues: [{ fieldId: 'planEnd', fieldName: '计划完成时间', values: [endValue] }],
+    }
+    const ready = { id: 'ready', name: '待开发' }
+    const writes = []
+    let verified = false
+    const api = createClient({
+      organization: 'org', token: 'mock-token',
+      fetcher: async (url, { method, body }) => {
+        const path = new URL(url).pathname
+        if (path.endsWith('/platform/user')) return Response.json({ id: 'user' })
+        if (path.endsWith('/projects/project/workitemTypes/bug/fields')) {
+          return Response.json([
+            { id: 'planStart', name: '计划开始时间' },
+            { id: 'planEnd', name: '计划完成时间' },
+          ])
+        }
+        if (path.endsWith('/workitems/issue/workflow')) return Response.json({ statuses: [ready] })
+        assert.ok(path.endsWith('/workitems/issue'))
+        if (method === 'GET') {
+          verified ||= state.status === ready
+          return Response.json(state)
+        }
+        assert.equal(method, 'PUT')
+        const update = JSON.parse(body)
+        if (update.status && (writes[0]?.planStart !== '2026-11-19 00:00:00' || writes[1]?.assignedTo !== 'user')) {
+          return new Response(null, { status: 400 })
+        }
+        writes.push(update)
+        if (update.status && requiresEnd && !endValue.value) {
+          return Response.json({ errorMessage: '计划完成时间必填' }, { status: 400 })
+        }
+        if (update.planEnd) endValue.value = update.planEnd
+        if (update.status === ready.id) state.status = ready
+        return new Response(null, { status: 204 })
+      },
+    })
+    const workflow = createWorkflow({ home: join(cwd, 'state'), branchExists: async () => {}, host: {}, client: () => api })
+    const plan = await workflow.createPlan(cwd, 'project', { name: '测试', branch: 'feature/test', end: '2026-11-20' })
+    const [result] = await workflow.addToPlan(cwd, 'project', plan.id, ['issue'])
+    assert.equal(result.result, '成功', result.error)
+    assert.deepEqual(writes, [
+      { planStart: '2026-11-19 00:00:00' }, { assignedTo: 'user' }, { status: 'ready' },
+      ...(requiresEnd && !existingEnd ? [{ planEnd: '2026-11-20 00:00:00' }, { status: 'ready' }] : []),
+    ])
+    assert.equal(verified, true)
+    assert.deepEqual((await workflow.plans(cwd, 'project'))[0].members, ['issue'])
+  })
+}
 
 test('状态回查超时，重启后回查成功且不重复写入', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'dy-yunxiao-workflow-'))

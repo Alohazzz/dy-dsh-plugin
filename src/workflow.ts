@@ -395,7 +395,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
         try {
           const issue = await issueFor(api, { project, id })
           if (label(issue.status) !== '待开发') {
-            await api.schedule(issue, project)
+            await api.schedule(issue, project, plan.end)
           }
           plan.members.push(id)
           try {

@@ -737,7 +737,7 @@ window.__ModuleLoader__.load({
                 <select value={planId} disabled={Boolean(results)} onChange={event => setPlan(event.target.value)}>
                   {plans?.map(item => <option key={item.id} value={item.id}>{item.name} · {item.end}</option>)}
                 </select></label>}
-              <p>待开发议题只补计划归属。其余议题将设为待开发，负责人设为当前用户，计划开始日设为当天。</p>
+              <p>待开发议题只补计划归属。其余议题将设为待开发，负责人设为当前用户，计划开始日设为当天。云效要求填写计划完成时间且议题未填时，使用所选计划的完成日期。</p>
               {results && <ul>{results.map(row => <li key={row.id}>
                 {issues.find(item => item.id === row.id)?.reference} · {row.result}{row.error && ' · ' + row.error}
               </li>)}</ul>}
