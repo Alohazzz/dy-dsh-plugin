@@ -7,6 +7,27 @@ from playwright.sync_api import expect
 
 
 def check(page):
+    legacy_stylesheet = "/api/dy-yunxiao/panel.css?legacy-workbench-asset"
+    page.route(f"**{legacy_stylesheet}", lambda route: route.fulfill(
+        content_type="text/css", body=".dy-yx { height: 100%; box-sizing: border-box; }",
+    ))
+    page.add_init_script(f"""(() => {{
+        function attachLegacyStylesheet() {{
+            if (!document.head) return false;
+            const stylesheet = document.createElement('link');
+            stylesheet.rel = 'stylesheet';
+            stylesheet.href = '{legacy_stylesheet}';
+            stylesheet.dataset.dyYunxiao = '';
+            document.head.append(stylesheet);
+            return true;
+        }}
+        if (attachLegacyStylesheet()) return;
+        const observer = new MutationObserver(() => {{
+            if (attachLegacyStylesheet()) observer.disconnect();
+        }});
+        observer.observe(document, {{ childList: true, subtree: true }});
+    }})()""")
+    page.reload()
     entry = page.get_by_role("button", name="研发工作台", exact=True)
     collapsed = page.get_by_role("button", name="打开侧边栏", exact=True)
     entry.or_(collapsed).first.wait_for(state="visible")
@@ -14,7 +35,8 @@ def check(page):
         collapsed.click()
     entry.click()
     expect(page.get_by_role("heading", name="研发工作台")).to_be_visible()
-    expect(page.get_by_role("heading", name="云效议题", exact=True)).to_be_visible()
+    expect(page.locator(".dy-wb")).to_have_css("display", "flex")
+    expect(page.get_by_role("heading", name="云效议题", exact=True)).to_be_in_viewport()
     page.get_by_role("button", name="连接设置", exact=True).click()
     connection = page.get_by_role("dialog", name="云效连接设置")
     expect(connection.get_by_role("button", name="保存并连接")).to_be_disabled()

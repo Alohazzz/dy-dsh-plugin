@@ -814,13 +814,14 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'uiWorkspace'],
       apply(ctx: { slots: Slots; uiWorkspace: Navigation }) {
-        if (!document.querySelector('link[data-dy-yunxiao]')) {
-          const stylesheet = document.createElement('link')
-          stylesheet.rel = 'stylesheet'
-          stylesheet.href = '/api/dy-yunxiao/panel.css'
-          stylesheet.dataset.dyYunxiao = ''
-          document.head.append(stylesheet)
-        }
+        // DSH can reload the plugin without replacing the document or its stylesheet.
+        const previousStylesheet = document.head.querySelector('link[data-dy-yunxiao]')
+        const stylesheet = document.createElement('link')
+        stylesheet.rel = 'stylesheet'
+        stylesheet.href = '/api/dy-yunxiao/panel.css'
+        stylesheet.dataset.dyYunxiao = ''
+        if (previousStylesheet) previousStylesheet.replaceWith(stylesheet)
+        else document.head.append(stylesheet)
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
           name: 'sidebar.panellist', id: 'dy-yunxiao', label: '研发工作台', order: 40,
         }, Icon))
