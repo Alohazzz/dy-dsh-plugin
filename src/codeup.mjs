@@ -21,9 +21,10 @@ export function codeupApi(call, organization) {
   }
   function requestRow(item, repositoryId = Number(item.projectId ?? item.targetProjectId)) {
     if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) throw new Error('缺少 MR 所属仓库')
-    /** @type {{ id: string, name: string, reviewed: boolean }[]} */
+    /** @type {{ id: string, name: string, reviewed: boolean, opinion: string }[]} */
     const reviewers = (Array.isArray(item.reviewers) ? item.reviewers : []).map(user => ({
       id: String(user.userId || ''), name: String(user.name || user.username || user.userId || ''), reviewed: user.hasReviewed === true,
+      opinion: String(user.reviewOpinionStatus || ''),
     }))
     return {
       ...receipt(item), repositoryId,
@@ -31,7 +32,8 @@ export function codeupApi(call, organization) {
       source: item.sourceBranch || '', target: item.targetBranch || '', title: item.title || '',
       status: item.status || item.state || '', author: item.author?.name || item.author?.username || '',
       description: item.description || '', conflict: item.hasConflict === true || item.conflictCheckStatus === 'HAS_CONFLICT',
-      reviewers,
+      reviewers, requirementsPassed: typeof item.allRequirementsPass === 'boolean' ? item.allRequirementsPass : undefined,
+      fastForward: item.supportMergeFastForwardOnly === true,
       ahead: typeof item.ahead === 'number' ? item.ahead : undefined, mergedRevision: item.mergedRevision || '',
     }
   }
@@ -39,6 +41,24 @@ export function codeupApi(call, organization) {
     const items = await call(base + '/changeRequests?' + new URLSearchParams(query))
     if (!Array.isArray(items)) throw new Error('无法读取 Codeup 合并请求列表')
     return items
+  }
+  /** @param {{ repositoryId: number, localId: number }} reference @param {AbortSignal} [signal] */
+  async function patches(reference, signal) {
+    const items = await call(requestPath(reference) + '/diffs/patches', signal)
+    if (!Array.isArray(items)) throw new Error('无法读取 Codeup 补丁集')
+    /** @param {string} type */
+    const latest = type => {
+      const patch = items.filter(item => item?.relatedMergeItemType === type && Number.isSafeInteger(item.versionNo))
+        .sort((a, b) => b.versionNo - a.versionNo)[0]
+      if (!patch || !/^[a-f0-9]{40}$/.test(patch.commitId)) throw new Error('Codeup 补丁集缺少有效的固定提交')
+      const ref = typeof patch.ref === 'string' && /^refs\/changes\/[0-9]+\/(?:target\/)?[0-9]+$/.test(patch.ref)
+        && patch.ref.split('/')[2] === String(reference.localId) ? patch.ref : patch.commitId
+      return {
+        sha: patch.commitId, ref, version: patch.versionNo,
+        patchSetId: typeof patch.patchSetBizId === 'string' ? patch.patchSetBizId : '',
+      }
+    }
+    return { source: latest('MERGE_SOURCE'), target: latest('MERGE_TARGET') }
   }
   return {
     async repository(fetchUrl, pushUrl) {
@@ -70,7 +90,7 @@ export function codeupApi(call, organization) {
       }
       const items = await listPage(query)
       const rows = items.map(item => requestRow(item))
-      return { rows: reviewerId ? rows.filter(row => row.status === 'UNDER_REVIEW' &&
+      return { rows: reviewerId ? rows.filter(row => ['UNDER_REVIEW', 'TO_BE_MERGED'].includes(row.status) &&
         row.reviewers.some(user => user.id === reviewerId && !user.reviewed)) : rows, more: items.length === 20 }
     },
     async detail(reference) {
@@ -82,14 +102,15 @@ export function codeupApi(call, organization) {
       }
       return requestRow(item, repositoryId)
     },
+    patches,
     /** @param {AbortSignal} [signal] */
     async reviewTarget(reference, signal) {
-      const mrPath = requestPath(reference)
-      const { repositoryId, localId } = reference
+      requestPath(reference)
+      const { repositoryId } = reference
       const repositoryPath = base + '/repositories/' + repositoryId
-      const [repository, patches] = await Promise.all([
+      const [repository, versions] = await Promise.all([
         call(repositoryPath, signal),
-        call(mrPath + '/diffs/patches', signal),
+        patches(reference, signal),
       ])
       const remote = repository?.httpUrlToRepo
       if (Number(repository?.id) !== repositoryId || typeof remote !== 'string' ||
@@ -97,20 +118,19 @@ export function codeupApi(call, organization) {
         !/^[\w.-]+(?:\/[\w.-]+)+$/.test(repository.pathWithNamespace)) {
         throw new Error('无法核对合并请求所属的 Codeup 仓库地址')
       }
-      if (!Array.isArray(patches)) throw new Error('无法读取 Codeup 补丁集')
-      /** @param {string} type */
-      const latest = type => {
-        const patch = patches.filter(item => item?.relatedMergeItemType === type && Number.isSafeInteger(item.versionNo))
-          .sort((a, b) => b.versionNo - a.versionNo)[0]
-        if (!patch || !/^[a-f0-9]{40}$/.test(patch.commitId)) throw new Error('Codeup 补丁集缺少有效的固定提交')
-        const ref = typeof patch.ref === 'string' && /^refs\/changes\/[0-9]+\/(?:target\/)?[0-9]+$/.test(patch.ref)
-          && patch.ref.split('/')[2] === String(localId) ? patch.ref : patch.commitId
-        return {
-          sha: patch.commitId, ref, version: patch.versionNo,
-          patchSetId: typeof patch.patchSetBizId === 'string' ? patch.patchSetBizId : '',
-        }
-      }
-      return { remote, source: latest('MERGE_SOURCE'), target: latest('MERGE_TARGET') }
+      return { remote, ...versions }
+    },
+    async approve(reference) {
+      const response = await call(requestPath(reference) + '/review', undefined, 'POST', { reviewOpinion: 'PASS' })
+      return response !== false && response?.result !== false
+    },
+    async merge(reference, mergeType) {
+      const response = await call(requestPath(reference) + '/merge', undefined, 'POST', { mergeType, removeSourceBranch: false })
+      return response !== false && response?.result !== false
+    },
+    async close(reference) {
+      const response = await call(requestPath(reference) + '/close', undefined, 'POST')
+      return response !== false && response?.result !== false
     },
     async findReviewComment(reference, marker) {
       const rows = await call(requestPath(reference) + '/comments/list', undefined, 'POST', { comment_type: 'GLOBAL_COMMENT' })

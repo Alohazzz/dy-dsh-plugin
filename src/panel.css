@@ -37,6 +37,8 @@
 }
 .dy-yx button.dy-yx-primary { background: var(--yx-primary-fill); color: var(--yx-primary-label); border-color: transparent; }
 .dy-yx button.dy-yx-primary:hover:enabled { background: var(--dsw-alias-button-primary-hover, var(--yx-primary-fill)); }
+.dy-yx button.dy-mr-danger { color: var(--dsw-alias-state-error-primary, light-dark(#983019, #feb39d)); }
+.dy-yx button.dy-mr-danger:hover:enabled { background: var(--dsw-alias-interactive-bg-hover-danger, var(--yx-raised)); }
 .dy-yx button:disabled {
   cursor: default;
   opacity: 1;

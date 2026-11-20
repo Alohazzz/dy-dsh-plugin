@@ -9,6 +9,8 @@ def check(page):
     creations = []
     detail_reads = []
     removals = []
+    mr_states = {1: 'UNDER_REVIEW', 2: 'UNDER_REVIEW'}
+    actions = []
     binding = dict(key='Nto.His/Term', repositoryId=2, path='org/Term', target='release')
     plans = {
         'legacy': dict(id='legacy', name='结算导出计划', branch='root-fix', end='2026-11-24', members=['issue1']),
@@ -17,14 +19,17 @@ def check(page):
 
     def plan_row(plan):
         return dict(plan=plan, planId=plan['id'], project='project', projectName='HIS 项目',
-                    workspaceId='w', workspaceName='HIS', mrStatus='UNDER_REVIEW' if (plan.get('delivery') or {}).get('mr') else '')
+                    workspaceId='w', workspaceName='HIS',
+                    mrStatus=mr_states[(plan['delivery']['mr']['repositoryId'])] if (plan.get('delivery') or {}).get('mr') else '')
 
     def mr_row(repo, local_id):
         return dict(repositoryId=repo, localId=local_id, title='刷新术语缓存' if repo == 2 else '结算导出修正',
                     url='https://codeup.aliyun.com/test', repository='org/Term' if repo == 2 else 'org/HIS',
                     source='term-fix' if repo == 2 else 'root-fix', target='release' if repo == 2 else 'main',
-                    author='开发者', status='UNDER_REVIEW', description='变更说明示例',
-                    reviewers=[dict(id='me', name='苏一', reviewed=False)])
+                    author='开发者', status=mr_states[repo], description='变更说明示例',
+                    mergedRevision='b'*40 if mr_states[repo] == 'MERGED' else '',
+                    reviewers=[dict(id='me', name='苏一', reviewed=mr_states[repo] == 'TO_BE_MERGED',
+                                    opinion='PASS' if mr_states[repo] == 'TO_BE_MERGED' else '')])
 
     def respond(route):
         data = route.request.post_data_json
@@ -96,7 +101,26 @@ def check(page):
             detail_reads.append(ref)
             related = [plan_row(plan) for plan in plans.values()
                        if (plan.get('delivery') or {}).get('mr') == dict(repositoryId=ref[0], localId=ref[1])]
-            value = dict(mr=mr_row(*ref), plans=related, planError='')
+            available = dict(UNDER_REVIEW=['approve', 'close'], TO_BE_MERGED=['merge', 'close'])
+            value = dict(mr=mr_row(*ref), plans=related, planError='', actions=available.get(mr_states[ref[0]], []))
+        elif method == 'previewMrAction':
+            mr = mr_row(args['repositoryId'], args['localId'])
+            value = dict(scope='scope', token='preview', actor='苏一', title=mr['title'], source=mr['source'],
+                         target=mr['target'], patch=dict(version=2, sha='a'*40), fastForward=True)
+        elif method == 'submitMrAction':
+            assert args['token'] == 'preview' and args['scope'] == 'scope'
+            actions.append(args['action'])
+            if args['action'] == 'merge':
+                assert args['mergeType'] == 'no-fast-forward'
+                value = dict(confirmed=False)
+            else:
+                mr_states[args['repositoryId']] = 'TO_BE_MERGED' if args['action'] == 'approve' else 'CLOSED'
+                value = dict(confirmed=True)
+        elif method == 'checkMrAction':
+            assert args == dict(repositoryId=2, localId=5, action='merge', scope='scope')
+            actions.append('check')
+            mr_states[2] = 'MERGED'
+            value = dict(confirmed=True)
         else:
             return route.continue_()
         route.fulfill(json=dict(value=value))
@@ -217,4 +241,41 @@ def check(page):
     expect(plan_dialog.get_by_label('目标仓库')).to_have_value('.')
     expect(plan_dialog.get_by_label('基础分支')).to_have_value('root-fix')
     plan_dialog.get_by_role('button', name='取消').click()
-    print('PASS | plan creation, issue removal and retry, legacy binding, scoped MR creation, existing MR association, shared detail and standalone MR')
+
+    page.get_by_role('button', name='交付计划', exact=True).click()
+    if page.get_by_role('button', name='返回交付计划', exact=True).is_visible():
+        page.get_by_role('button', name='返回交付计划', exact=True).click()
+    page.get_by_role('button', name='术语缓存计划', exact=True).click()
+    page.get_by_role('button', name='查看 MR !5').click()
+    page.get_by_role('button', name='批准', exact=True).click()
+    approval = page.get_by_role('dialog', name='批准', exact=True)
+    expect(approval).to_contain_text('源补丁集 v2')
+    approval.get_by_role('button', name='取消').click()
+    assert not actions
+    page.get_by_role('button', name='批准', exact=True).click()
+    approval.get_by_role('button', name='确认批准').click()
+    expect(page.get_by_text('苏一（已批准）')).to_be_visible()
+    page.get_by_role('button', name='合并', exact=True).click()
+    merge = page.get_by_role('dialog', name='合并', exact=True)
+    confirm_merge = merge.get_by_role('button', name='确认合并')
+    expect(confirm_merge).to_be_disabled()
+    merge.get_by_label('合并方式').select_option('no-fast-forward')
+    expect(confirm_merge).to_be_in_viewport()
+    confirm_merge.click()
+    expect(merge).to_contain_text('Codeup 结果尚未确认')
+    merge.get_by_role('button', name='核对结果').click()
+    expect(page.get_by_text('MR 已合并 · 已核对 Codeup')).to_be_visible()
+    expect(page.get_by_text('b'*40)).to_be_visible()
+    expect(page.get_by_role('button', name='关闭 MR', exact=True)).to_have_count(0)
+    page.get_by_role('button', name='返回计划', exact=True).click()
+    expect(page.get_by_text('代码已合并', exact=True)).to_be_visible()
+    page.get_by_role('button', name='返回交付计划', exact=True).click()
+    page.get_by_role('button', name='结算导出计划', exact=True).click()
+    page.get_by_role('button', name='查看 MR !5').click()
+    page.get_by_role('button', name='关闭 MR', exact=True).click()
+    page.get_by_role('dialog', name='关闭 MR').get_by_role('button', name='确认关闭 MR').click()
+    expect(page.get_by_text('MR 已关闭 · 已核对 Codeup')).to_be_visible()
+    page.get_by_role('button', name='返回计划', exact=True).click()
+    expect(page.get_by_text('已关闭', exact=True)).to_be_visible()
+    assert actions == ['approve', 'merge', 'check', 'close']
+    print('PASS | plan and MR entry points, approval, merge and status check, close, and plan refresh')

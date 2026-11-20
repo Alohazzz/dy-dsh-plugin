@@ -803,7 +803,7 @@ window.__ModuleLoader__.load({
         <div className="dy-wb-content" hidden={module !== 'requests' || !!mr}>{visited.requests && <Requests revision={revision}
           active={module === 'requests' && !mr} openMr={openMr} />}</div>
         {module === 'requests' && mr && <div className="dy-wb-content"><RequestDetail
-          key={mr.ref.repositoryId + ':' + mr.ref.localId} reference={mr.ref} origin={mr.origin}
+          key={mr.ref.repositoryId + ':' + mr.ref.localId} reference={mr.ref} origin={mr.origin} changed={changed}
           back={() => { setMr(undefined); if (mr.origin === 'plan') open('plans') }} openPlan={openPlan} /></div>}
         <div className="dy-wb-content" hidden={module !== 'skills'}>{visited.skills && <SkillPanel />}</div>
       </div>

@@ -18,6 +18,13 @@ export type Meta = {
   projects: Option[]; workspaces: Option[]; presets: Option[]; permissions: Option[]
 }
 export type MrRef = { repositoryId: number; localId: number }
+export type MrAction = 'approve' | 'merge' | 'close'
+export type MrMergeType = 'no-fast-forward' | 'squash' | 'rebase' | 'ff-only'
+export type MrActionPreview = {
+  scope: string; token: string; title: string; source: string; target: string; actor: string
+  patch?: { version: number; sha: string }; fastForward: boolean
+}
+export type MrActionResult = { confirmed: boolean }
 export type MrSnapshot = { id: string; source: string; target: string; version: number; directory: string }
 export type MrPull = { id: string } & (
   { status: 'running' | 'cancelling' | 'saving' | 'cancelled' } | { status: 'failed'; error: string }

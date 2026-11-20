@@ -4,6 +4,7 @@ import type * as ReactType from 'react'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { mrReviewCommentLimit, type Meta, type MrRef, type MrReviewComment, type MrReviewView, type Plan,
+  type MrAction, type MrActionPreview, type MrActionResult, type MrMergeType,
   type PlanDetails, type PlanIssue, type PlanKey, type PlanRow } from './contracts.ts'
 import type { codeupApi } from './codeup.mjs'
 import type { deliveryOptions, mrRepos } from './merge-request.ts'
@@ -20,6 +21,8 @@ const queues: Record<Queue, string> = { mine: '我的发起', review: '待我审
 const states: Record<string, string> = {
   UNDER_DEV: '开发中', UNDER_REVIEW: '待审核', TO_BE_MERGED: '待合并', MERGED: '已合并', CLOSED: '已关闭', UNAVAILABLE: 'MR 状态暂不可读',
 }
+const mrActionLabels: Record<MrAction, string> = { approve: '批准', merge: '合并', close: '关闭 MR' }
+const mrActionReceipts: Record<MrAction, string> = { approve: '评审已通过', merge: 'MR 已合并', close: 'MR 已关闭' }
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 const keyOf = (ref: MrRef) => ref.repositoryId + ':' + ref.localId
 const planKey = ({ project, workspaceId, planId }: PlanKey) => ({ project, workspaceId, planId })
@@ -492,23 +495,30 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </main>
   }
 
-  function RequestDetail({ reference, origin, back, openPlan }: {
-    reference: MrRef; origin: Queue | 'plan'; back(): void; openPlan(plan: PlanKey): void
+  function RequestDetail({ reference, origin, back, openPlan, changed }: {
+    reference: MrRef; origin: Queue | 'plan'; back(): void; openPlan(plan: PlanKey): void; changed(): void
   }) {
-    const result = useRead<{ mr: Mr; plans: PlanRow[]; planError: string; reviewSupported?: boolean }>('workbenchMr', reference)
+    const result = useRead<{ mr: Mr; plans: PlanRow[]; planError: string; reviewSupported?: boolean; actions?: MrAction[] }>('workbenchMr', reference)
     const mr = result.value?.mr
+    const [action, setAction] = useState<MrAction>()
+    const [notice, setNotice] = useState('')
     return <main className="dy-yx dy-delivery dy-delivery-stack">
       <header><div><button className="dy-delivery-link" onClick={back}>返回{origin === 'plan' ? '计划' : queues[origin]}</button>
         <h2>!{reference.localId} {mr?.title || '合并请求详情'}</h2>
         {mr && <small>{mr.repository || result.value?.plans[0]?.plan.delivery?.path || '仓库 ' + mr.repositoryId}</small>}</div>
         <div className="dy-yx-actions"><button onClick={result.retry}>刷新</button>
+          {result.value?.actions?.map(value => <button key={value} type="button"
+            className={value === 'close' ? 'dy-mr-danger' : value === 'merge' ? 'dy-yx-primary' : undefined}
+            onClick={() => { setNotice(''); setAction(value) }}>{mrActionLabels[value]}</button>)}
           {mr?.url && <a href={mr.url} target="_blank" rel="noreferrer">在 Codeup 打开</a>}</div></header>
       {result.error && <Problem error={result.error} retry={result.retry} />}
       {!result.error && !mr && <p role="status">正在读取合并请求详情…</p>}
+      {notice && <p className="dy-yx-notice" role="status">{notice}</p>}
       {mr && <><dl className="dy-delivery-facts dy-delivery-card">
         <div><dt>分支</dt><dd><Branches source={mr.source} target={mr.target} /></dd></div>
         <div><dt>发起人</dt><dd>{mr.author || '—'}</dd></div>
-        <div><dt>审核人</dt><dd>{mr.reviewers.map(row => row.name).filter(Boolean).join('、') || '—'}</dd></div>
+        <div><dt>审核人</dt><dd>{mr.reviewers.filter(row => row.name).map(row =>
+          row.name + (row.opinion === 'PASS' ? '（已批准）' : '')).join('、') || '—'}</dd></div>
         <div><dt>状态</dt><dd><Status label={states[mr.status] || '未知'} />{mr.conflict && ' · 有冲突'}</dd></div>
         {mr.ahead !== undefined && <div><dt>源分支领先</dt><dd>{mr.ahead} 个提交</dd></div>}
         {mr.mergedRevision && <div><dt>合并提交</dt><dd><code>{mr.mergedRevision}</code></dd></div>}
@@ -524,7 +534,78 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           <h3>AI 合并审查</h3>
           <p role="status">当前 DSH 宿主尚未加载审查接口。请重启此 DSH 实例后刷新页面。</p>
         </section>}</>}
+      {action && <MrActionDialog reference={reference} action={action} close={() => {
+        setAction(undefined)
+        result.retry()
+        changed()
+      }} done={() => {
+        setNotice(mrActionReceipts[action] + ' · 已核对 Codeup')
+        setAction(undefined)
+        result.retry()
+        changed()
+      }} />}
     </main>
+  }
+
+  function MrActionDialog({ reference, action, close, done }: {
+    reference: MrRef; action: MrAction; close(): void; done(): void
+  }) {
+    const intent = { ...reference, action }
+    const result = useRead<MrActionPreview>('previewMrAction', intent)
+    const preview = result.value
+    const [mergeType, setMergeType] = useState<MrMergeType | ''>('')
+    const [busy, setBusy] = useState(false)
+    const [pending, setPending] = useState(false)
+    const [error, setError] = useState('')
+    const label = mrActionLabels[action]
+    async function submit(event: ReactType.FormEvent) {
+      event.preventDefault()
+      if (busy || !preview || (!pending && action === 'merge' && !mergeType)) return
+      setError('')
+      setBusy(true)
+      try {
+        const check = { ...intent, scope: preview.scope }
+        const receipt = await (pending ? rpc<MrActionResult>('checkMrAction', check) :
+          rpc<MrActionResult>('submitMrAction', { ...check, token: preview.token, mergeType: mergeType || undefined }))
+        if (receipt.confirmed) done()
+        else setPending(true)
+      } catch (failure) { setError(errorText(failure)) }
+      finally { setBusy(false) }
+    }
+    return <Modal label={label} busy={busy} close={close}>
+      <form onSubmit={submit}>
+        <header><h2>{label}</h2></header>
+        {result.error && <Problem error={result.error} retry={result.retry} />}
+        {!preview && !result.error && <p role="status">正在核对 Codeup 合并请求…</p>}
+        {preview && <>
+          <p><strong>!{reference.localId} {preview.title}</strong></p>
+          <p><Branches source={preview.source} target={preview.target} /></p>
+          <p>操作账号 {preview.actor}</p>
+          {preview.patch && <p>源补丁集 v{preview.patch.version} · <code>{preview.patch.sha.slice(0, 12)}</code></p>}
+          {action === 'merge' && <>
+            <label>合并方式 <select value={mergeType} disabled={busy || pending}
+              onChange={event => setMergeType(event.target.value as MrMergeType | '')}>
+              <option value="">请选择合并方式</option>
+              <option value="no-fast-forward">普通合并</option>
+              <option value="squash">压缩合并</option>
+              <option value="rebase">变基合并</option>
+              {preview.fastForward && <option value="ff-only">仅快进合并</option>}
+            </select></label>
+            <p>合并将更新目标分支，并保留源分支。</p>
+          </>}
+          {action === 'close' && <p>关闭后，Codeup 将结束此合并请求。</p>}
+        </>}
+        {pending && <p role="status" className="dy-yx-notice">Codeup 结果尚未确认。请核对结果后再继续。</p>}
+        {error && <Problem error={error} />}
+        <div className="dy-yx-actions">
+          <button type="button" disabled={busy} onClick={close}>{pending ? '返回详情' : '取消'}</button>
+          <button type="submit" className={action === 'close' && !pending ? 'dy-mr-danger' : 'dy-yx-primary'}
+            disabled={busy || !preview || (!pending && action === 'merge' && !mergeType)}>
+            {busy ? '正在处理…' : pending ? '核对结果' : '确认' + label}
+          </button>
+        </div>
+      </form>
+    </Modal>
   }
 
   function ReviewPanel({ reference, title }: { reference: MrRef; title: string }) {

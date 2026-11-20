@@ -2,6 +2,7 @@ import { planWritingInstructions, writingSkill } from './writing-skill.mjs'
 import { researchSkill } from './research-skill.ts'
 import { deliveryOptions, git, mrPreview, mrRepos, submitMr, workspaceRepository, type MrInput } from './merge-request.ts'
 import { createMrReviews, reviewSessionPrefix } from './mr-review.ts'
+import { availableMrActions, createMrActions } from './mr-actions.ts'
 import { issueMaterials } from './issue-materials.ts'
 import { createResearch } from './research-prototype.ts'
 import { readFile } from 'node:fs/promises'
@@ -100,6 +101,7 @@ export function apply(ctx: Context) {
   const home = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'dy-yunxiao')
   const deadlineFields = new Map<string, string>()
   const settings = createConnectionSettings(ctx.credentials)
+  const mrActions = createMrActions(settings.client)
   const skillSources = createSkillSources(home)
   const installations = createSkillInstallations(home, id => ctx.agents.get(id), () => {
     // DSH 0.2.2's slash menu uses this forwarded event to drop its per-session catalog cache.
@@ -368,6 +370,9 @@ export function apply(ctx: Context) {
     startMrReview: reviews.start,
     mrReview: reviews.status,
     publishMrReviewComment: reviews.publish,
+    previewMrAction: mrActions.preview,
+    submitMrAction: mrActions.submit,
+    checkMrAction: mrActions.check,
     mrRepos: ({ workspaceId }: { workspaceId: string }) => mrRepos(workspace(workspaceId).path),
     async mrPreview({ workspaceId, key }: { workspaceId: string; key: string }) {
       return mrPreview(workspace(workspaceId).path, key, (await settings.client()).codeup)
@@ -446,14 +451,16 @@ export function apply(ctx: Context) {
     },
     async workbenchMr(input: MrRef) {
       const api = await settings.client()
-      const [mr, plans] = await Promise.all([
+      const [mr, plans, actor] = await Promise.all([
         api.codeup.detail(input),
         planRows(api).then(rows => ({
           rows: rows.filter(row => row.plan.delivery?.mr?.repositoryId === input.repositoryId &&
             row.plan.delivery.mr.localId === input.localId), error: '',
         }), () => ({ rows: [], error: '关联计划读取失败' })),
+        api.currentUser().catch(() => undefined),
       ])
-      return { mr, plans: plans.rows, planError: plans.error, reviewSupported: true }
+      return { mr, plans: plans.rows, planError: plans.error, reviewSupported: true,
+        actions: actor ? availableMrActions(mr, String(actor.id)) : [] }
     },
     skillSources: skillSources.list,
     bindSkillSource: (input: SkillSourceInput) => skillSources.bind(input),

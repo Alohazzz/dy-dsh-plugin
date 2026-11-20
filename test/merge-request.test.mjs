@@ -9,6 +9,8 @@ import { deliveryOptions, git, mrRepos, mrPreview, submitMr } from '../src/merge
 import { codeupApi } from '../src/codeup.mjs'
 import { apply } from '../src/host.ts'
 import { createMrReviews, fetchReviewHistory } from '../src/mr-review.ts'
+import { availableMrActions, createMrActions } from '../src/mr-actions.ts'
+import { createClient } from '../src/yunxiao-client.mjs'
 import { digest } from '../src/yunxiao.mjs'
 import { createWorkflow } from '../src/workflow.ts'
 
@@ -302,10 +304,95 @@ test('Codeup pending review uses the current reviewer and repository-local MR id
     return { ...sample, state: undefined, status: 'MERGED' }
   }, 'org')
   const result = await api.list({ page: 1, reviewerId: 'me', repository: 'org/repo' })
-  assert.deepEqual(result.rows.map(row => [row.repositoryId, row.localId]), [[2, 5], [3, 5]])
+  assert.deepEqual(result.rows.map(row => [row.repositoryId, row.localId]), [[2, 5], [3, 5], [2, 8]])
   assert.equal(result.more, false)
   assert.equal((await api.detail({ repositoryId: 2, localId: 5 })).status, 'MERGED')
   await assert.rejects(api.detail({ repositoryId: 2, localId: '../5' }), /无效/)
+})
+
+test('MR actions reject stale patches and reconcile writes by reading Codeup', async () => {
+  const ref = { repositoryId: 2, localId: 5 }
+  const mr = { projectId: 2, localId: 5, title: '术语缓存', sourceBranch: 'fix', targetBranch: 'release',
+    status: 'UNDER_REVIEW', reviewers: [{ userId: 'me', hasReviewed: false }], supportMergeFastForwardOnly: true }
+  let actor = 'me'
+  let version = 1
+  let failRead = false
+  let rejectClose = false
+  const written = []
+  const started = Promise.withResolvers()
+  const release = Promise.withResolvers()
+  const api = createClient({ token: 'fixture', organization: 'org', fetcher: async (url, init) => {
+    const path = new URL(url).pathname
+    if (path.endsWith('/platform/user')) return Response.json({ id: actor, name: actor })
+    assert.match(path, /\/repositories\/2\/changeRequests\/5(?:\/|$)/)
+    if (path.endsWith('/5')) {
+      if (failRead) return new Response(null, { status: 503 })
+      return Response.json(mr)
+    }
+    if (path.endsWith('/diffs/patches')) return Response.json([
+      { relatedMergeItemType: 'MERGE_SOURCE', versionNo: version, commitId: String(version).repeat(40) },
+      { relatedMergeItemType: 'MERGE_TARGET', versionNo: 1, commitId: 'a'.repeat(40) },
+    ])
+    assert.equal(init.method, 'POST')
+    const action = path.split('/').at(-1)
+    written.push([action, init.body && JSON.parse(init.body)])
+    if (action === 'review') {
+      started.resolve()
+      await release.promise
+      mr.reviewers[0].reviewOpinionStatus = 'PASS'
+      mr.reviewers[0].hasReviewed = true
+      mr.status = 'TO_BE_MERGED'
+      throw new Error('lost reply')
+    }
+    if (action === 'merge') {
+      mr.status = 'MERGED'
+      mr.mergedRevision = 'b'.repeat(40)
+      failRead = true
+      return Response.json(mr)
+    }
+    assert.equal(action, 'close')
+    if (rejectClose) return Response.json({ result: false })
+    mr.status = 'CLOSED'
+    return Response.json({ result: true })
+  } })
+  const actions = createMrActions(async () => api)
+  const prepare = async action => ({ ...ref, action, ...await actions.preview({ ...ref, action }) })
+  assert.deepEqual(availableMrActions(await api.codeup.detail(ref), 'outsider'), ['close'])
+  const stale = await prepare('approve')
+  version++
+  await assert.rejects(actions.submit(stale), /补丁集已变化/)
+  mr.status = 'TO_BE_MERGED'
+  const approval = await prepare('approve')
+  actor = 'other'
+  await assert.rejects(actions.submit(approval), /账号或组织已变化/)
+  actor = 'me'
+  assert.deepEqual(written, [])
+  const applying = actions.submit(approval)
+  await started.promise
+  await assert.rejects(actions.submit(approval), /正在处理/)
+  release.resolve()
+  assert.deepEqual(await applying, { confirmed: true })
+  assert.deepEqual(await actions.submit(approval), { confirmed: true })
+  assert.deepEqual(written, [['review', { reviewOpinion: 'PASS' }]])
+
+  const merge = await prepare('merge')
+  await assert.rejects(actions.submit(merge), /可用的合并方式/)
+  assert.deepEqual(await actions.submit({ ...merge, mergeType: 'ff-only' }), { confirmed: false })
+  assert.deepEqual(await actions.check(merge), { confirmed: false })
+  failRead = false
+  assert.deepEqual(await actions.check(merge), { confirmed: true })
+  assert.deepEqual(written.at(-1), ['merge', { mergeType: 'ff-only', removeSourceBranch: false }])
+  assert.equal(written.length, 2)
+  await assert.rejects(prepare('close'), /状态或审核人已变化/)
+
+  mr.status = 'UNDER_DEV'
+  const close = await prepare('close')
+  rejectClose = true
+  await assert.rejects(actions.submit(close), /Codeup 拒绝/)
+  rejectClose = false
+  assert.deepEqual(await actions.submit(close), { confirmed: true })
+  assert.deepEqual(written.at(-1), ['close', undefined])
+  await assert.rejects(actions.check(merge), /MR 已关闭/)
 })
 
 test('plan association is verified by the host and survives a restart', async t => {
