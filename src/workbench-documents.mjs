@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { lexer } from 'marked'
 import { parse } from 'yaml'
-import { planWritingInstructions } from './writing-skill.mjs'
+import { legacyPlanWritingInstructions, planWritingInstructions } from './writing-skill.mjs'
 
 const directory = new URL('../skills/dy-workbench-docs/', import.meta.url)
 
@@ -56,11 +56,23 @@ export function templateFor(type, version = templateVersion) {
   return template
 }
 
-/** @param {...DocumentType} types */
-export function documentInstructions(...types) {
-  return [workbenchWritingSkill.content, planWritingInstructions, JSON.stringify(Object.fromEntries(
-    types.map(type => [type, templateFor(type)])),
-  )].join('\n\n')
+export function researchDocumentInstructions() {
+  const guidance = workbenchWritingSkill.content.split(/(?=^## )/m)
+    .filter(section => /^## (调研与执行方案|交付前核对)\r?\n/.test(section))
+    .map(section => section.trim())
+  return [
+    ...guidance,
+    planWritingInstructions,
+    '按以下顺序写二级标题。',
+    '调研报告：' + templateFor('research').sections?.join('、') + '。',
+    '执行方案：' + templateFor('proposal').sections?.join('、') + '。',
+  ].join('\n\n')
+}
+
+export function legacyExecutionDocumentInstructions() {
+  return [workbenchWritingSkill.content, legacyPlanWritingInstructions(), JSON.stringify({
+    execution: templateFor('execution', 1), publication: templateFor('publication', 1),
+  })].join('\n\n')
 }
 
 /** @param {string} file @param {string} markdown @param {string[]} expected */

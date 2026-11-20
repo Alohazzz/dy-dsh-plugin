@@ -68,6 +68,58 @@ test('模板校验拒绝缺字段、空正文、重复和错序，代码围栏�
   assert.equal(validatedDocument('research', 'report.md', fields, body + '\n\n\x60\x60\x60md\n## 示例\n\x60\x60\x60').templateVersion, 1)
 })
 
+test('收取缺少草稿标识的回复时，以 DSH 的请求归属为准', async t => {
+  const root = await workspace(t)
+  const scope = archiveScope(root, 'org', 'project', 'plan')
+  await savePlanArchive(scope, plan(scope.planId, '调研归档'))
+  const report = markdown('research')
+  const text = ['```json', JSON.stringify({ report, questions: [
+    { question: '如何验收？', recommended: '复测回显', alternatives: [] },
+  ], proposal: '', decisions: [] }), '```'].join('\n')
+  const record = (seq, type, data) => ({ event: { seq, type, data } })
+
+  for (const mixed of [false, true]) {
+    let requestId
+    let historyReads = 0
+    const reply = record(5, 'assistant/message', { turn: 2, message: { content: [{ type: 'text', text }] } })
+    const controller = {
+      create: async input => input,
+      resolveAgent: async () => ({ agent: { session: { append() {} } } }),
+      prompt: async input => { requestId = input.requestId },
+      wait: async () => ({ reason: 'idle', state: { cursor: 6, running: false, queue: [] }, output: { records: [reply] } }),
+      events: async ({ throughSeq, beforeSeq }) => {
+        assert.equal(throughSeq, 6)
+        historyReads++
+        if (beforeSeq === 4) return { hasMore: true, records: [
+          record(2, 'turn/start', { turn: 2 }), record(3, 'user/message', { source: { kind: 'user', rpcId: requestId } }),
+        ] }
+        return { hasMore: true, records: [
+          record(4, 'user/message', { source: mixed ? { kind: 'user', rpcId: 'another-request' } : { kind: 'runtime-context' } }),
+          reply, record(6, 'turn/end', { turn: 2, reason: { kind: 'completed' } }),
+        ] }
+      },
+    }
+    const research = createResearch(controller, join(root, 'research'), controller.create)
+    const batchId = digest('draft-without-marker-' + mixed)
+    research.start(root, [{ id: issue.id, title: issue.title, text: '原文', archive: { scope, issue } }], batchId)
+    let row = research.status({ batchId })[0]
+    for (let i = 0; row.status === 'running' && i < 50; i++) {
+      await setTimeout(35)
+      row = research.status({ batchId })[0]
+    }
+    assert.equal(historyReads, 2)
+    if (mixed) {
+      assert.equal(row.status, 'failed')
+      assert.match(row.error, /已收到回复.*缺少本轮草稿标识/)
+      assert.equal(row.drafts.length, 0)
+    } else {
+      assert.equal(row.status, 'ready', row.error)
+      assert.equal(row.drafts[0].report, report)
+    }
+    assert.equal((await listIssueArchiveDocuments(scope, issue.id)).length, 1)
+  }
+})
+
 test('A 的延迟调研写回原项目，重启可兼容旧材料并重建索引', async t => {
   const root = await workspace(t)
   const a = archiveScope(root, 'org', 'A', 'plan-old')
@@ -91,7 +143,7 @@ test('A 的延迟调研写回原项目，重启可兼容旧材料并重建索引
     },
   }
   const state = join(root, 'research')
-  const research = createResearch(controller, state)
+  const research = createResearch(controller, state, controller.create)
   const batchId = digest('batch-a')
   const rows = () => research.status({ batchId })
   const settle = async () => {
@@ -108,6 +160,12 @@ test('A 的延迟调研写回原项目，重启可兼容旧材料并重建索引
   answer = { report: markdown('research', '旧回执复用需要确认迁移方式'), proposal: null, decisions: [],
     questions: [{ question: '采用哪种旧回执兼容方式？', recommended: '兼容读取', alternatives: ['迁移后读取'] }] }
   const first = await settle()
+  const text = prompt.content[0].text
+  for (const type of ['research', 'proposal']) {
+    assert.ok(text.includes(templateFor(type).sections.join('、')))
+  }
+  assert.match(text, /DRAFT-/)
+  assert.doesNotMatch(text, /## 执行及交付|规则优先级|编辑流程/)
   assert.equal(first.drafts[0].proposalVersion, undefined)
   assert.equal(research.summaries({ batchId })[0].canSubmit, false)
   answer = { report: markdown('research', '已确认保留原回执'), proposal: markdown('proposal'), decisions: ['兼容读取'], questions: [] }
@@ -121,7 +179,7 @@ test('A 的延迟调研写回原项目，重启可兼容旧材料并重建索引
   research.submit({ ...key, version: 3 })
   research.finalize({ ...key, version: 3 })
   await research.archiveReviews(batchId, first.sessionId)
-  assert.equal(createResearch(controller, state).summaries({ batchId })[0].label, '已定稿')
+  assert.equal(createResearch(controller, state, controller.create).summaries({ batchId })[0].label, '已定稿')
   assert.equal((await archiveIndex(b)).plans[0].issues.length, 0)
   await savePlanArchive(a2, plan(a2.planId, '新计划'))
   const indexPath = join(root, (await archiveIndex(a)).folder, 'index.json')
@@ -182,6 +240,7 @@ test('宿主 RPC 在 A 启动调研、切到 B 建计划、重启后返回 A 查
     credentials: { readRecord: async () => ({ kind: 'api-key', key: 'fixture-token', env: { YUNXIAO_ORG_ID: 'org' } }) },
     workspaceRegistry: { get: id => id === a.workspaceId ? registeredWorkspace : undefined, list: () => [registeredWorkspace] },
     connection: { fetch: { register(route) { if (route.path === '/api/dy-yunxiao') endpoint = route.fetch } } },
+    permissionPresets: { set: (_session, name) => assert.equal(name, 'danger-full-access') },
     sessionController: {
       create: async input => input,
       resolveAgent: async () => ({ agent: { session: { append() {} } } }),

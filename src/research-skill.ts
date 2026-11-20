@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { parse } from 'yaml'
+import { planWritingInstructions } from './writing-skill.mjs'
 
 const source = readFileSync(new URL('../skills/yunxiao-dsh-research/SKILL.md', import.meta.url), 'utf8').trim()
 const sections = /^---\r?\n([\s\S]+?)\r?\n---\r?\n([\s\S]+)$/.exec(source)
@@ -9,5 +10,5 @@ const { name, description } = parse(sections[1])
 export const researchSkill = {
   name: String(name), description: String(description), source: 'runtime',
   invocation: { userInvocable: true, modelInvocable: false },
-  content: sections[2].trim(),
+  content: [sections[2].trim(), planWritingInstructions].join('\n\n'),
 }

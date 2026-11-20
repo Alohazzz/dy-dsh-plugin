@@ -1,5 +1,5 @@
-import { planWritingInstructions, writingSkill } from './writing-skill.mjs'
-import { documentInstructions, workbenchWritingSkill } from './workbench-documents.mjs'
+import { writingSkill } from './writing-skill.mjs'
+import { workbenchWritingSkill } from './workbench-documents.mjs'
 import { archiveIndex, archiveScope, assertOpenPlan, listIssueArchiveDocuments, readIssueArchiveDocument, savePlanArchive, searchedArchive } from './workbench-archive.ts'
 import { saveCompletion, workbenchCompletion, type CompletionAction } from './workbench-completion.ts'
 import { researchSkill } from './research-skill.ts'
@@ -56,7 +56,7 @@ type Context = {
     wait(input: { sessionId: string; timeoutMs: number; maxMessages: number }, signal: AbortSignal): Promise<ReviewWait>
   }
   agentPresets: { remoteExportList(): Promise<{ presets: { id: string; name?: string; broken?: string }[] }> }
-  permissionPresets?: { names: string[]; optionOf(name: string): { label: string }; set(session: unknown, name: string): void }
+  permissionPresets: { names: string[]; optionOf(name: string): { label: string }; set(session: unknown, name: string): void }
 }
 
 function options(items: { id: string; name?: string; displayName?: string }[]): Option[] {
@@ -117,8 +117,8 @@ export function apply(ctx: Context) {
   ctx.inject(['skills'], scope => {
     scope.skills.register(writingSkill)
     scope.skills.register(workbenchWritingSkill)
-    scope.skills.register({ ...executionSkill, content: executionSkill.content + '\n\n' + documentInstructions('execution', 'publication') })
-    scope.skills.register({ ...researchSkill, content: researchSkill.content + '\n\n' + planWritingInstructions })
+    scope.skills.register(executionSkill)
+    scope.skills.register(researchSkill)
     scope.skills.registerProvider(installations.provider)
   })
   async function hasSessionSkill(sessionId: string, name: string) {
@@ -131,13 +131,16 @@ export function apply(ctx: Context) {
       return false
     }
   }
+  async function createTaskSession(input: { sessionId: string; cwd: string; agentPreset: string }) {
+    const created = await ctx.sessionController.create(input)
+    const { agent } = await ctx.sessionController.resolveAgent(created?.sessionId ?? input.sessionId)
+    if (!agent) throw new Error('任务会话未就绪，无法设置完全访问权限')
+    ctx.permissionPresets.set(agent.session, 'danger-full-access')
+    return created
+  }
   const reviews = createMrReviews(home, settings.client, skillSources.list, installations, {
     async create(sessionId, cwd) {
-      await ctx.sessionController.create({ sessionId, cwd, agentPreset: 'standard' })
-      const { agent } = await ctx.sessionController.resolveAgent(sessionId)
-      if (!agent) throw new Error('无法启动审查会话')
-      agent.session.append('sandbox/mode', { mode: 'read-only' })
-      agent.session.append('approval/policy', { policy: 'never' })
+      await createTaskSession({ sessionId, cwd, agentPreset: 'standard' })
     },
     hasSkill: sessionId => hasSessionSkill(sessionId, 'merge-code-review'),
     prompt: (sessionId, text) => ctx.sessionController.prompt({
@@ -149,7 +152,7 @@ export function apply(ctx: Context) {
     home, client: settings.client,
     host: {
       hasExecutionSkill: sessionId => hasSessionSkill(sessionId, executionSkill.name),
-      create: input => ctx.sessionController.create(input),
+      create: createTaskSession,
       prompt: ({ sessionId, requestId, text }) => ctx.sessionController.prompt(
         { sessionId, requestId, mode: 'queue', content: [{ type: 'text', text }] }, AbortSignal.timeout(60_000)),
     },
@@ -336,7 +339,7 @@ export function apply(ctx: Context) {
   }
 
   const researchDirectory = join(home, 'research')
-  const research = createResearch(ctx.sessionController, researchDirectory, hasSessionSkill)
+  const research = createResearch(ctx.sessionController, researchDirectory, createTaskSession, hasSessionSkill)
   function researchBatch(organization: string, input: PlanKey) {
     const current = digest(JSON.stringify([organization, realpathSync(planDirectory(input)), input.project, input.planId]))
     const legacy = digest(JSON.stringify([organization, input.workspaceId, input.project, input.planId]))

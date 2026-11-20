@@ -13,7 +13,7 @@ import { researchSkill } from '../src/research-skill.ts'
 import { planWritingInstructions, writingSkill } from '../src/writing-skill.mjs'
 import { createWorkflow, executionSkill } from '../src/workflow.ts'
 import { archiveIndex, archiveScope } from '../src/workbench-archive.ts'
-import { templateFor } from '../src/workbench-documents.mjs'
+import { legacyExecutionDocumentInstructions, templateFor } from '../src/workbench-documents.mjs'
 
 async function addPlannedIssue(workflow, cwd, { project, id }) {
   const plan = await workflow.createPlan(cwd, project, { name: '交付计划', branch: 'feature/test', end: '2026-11-20' })
@@ -75,6 +75,7 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
 
   let endpoint
   const registeredSkills = []
+  const permissions = []
   const created = []
   const prompts = []
   apply({
@@ -85,7 +86,9 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
     credentials: { readRecord: async () => ({ kind: 'api-key', key: 'test-token', env: { YUNXIAO_ORG_ID: 'org' } }) },
     workspaceRegistry: { get: id => id === workspaceId ? { id, path: cwd } : undefined },
     connection: { fetch: { register(route) { if (route.path === '/api/dy-yunxiao') endpoint = route.fetch } } },
+    permissionPresets: { set: (session, preset) => permissions.push([session, preset]) },
     sessionController: {
+      resolveAgent: async sessionId => ({ agent: { session: sessionId } }),
       create: async input => { created.push(input) },
       prompt: async input => { prompts.push(input) },
     },
@@ -93,7 +96,8 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
   assert.ok(registeredSkills.includes(writingSkill))
   assert.match(writingSkill.content, /## 参考资料路由/)
   for (const skill of [executionSkill, researchSkill]) {
-    assert.ok(registeredSkills.find(item => item.name === skill.name).content.includes(planWritingInstructions))
+    assert.ok(registeredSkills.includes(skill))
+    assert.ok(skill.content.includes(planWritingInstructions))
   }
   const rpc = async (method, input) => (await endpoint(new Request('http://localhost/api/dy-yunxiao', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ method, input }),
@@ -117,14 +121,20 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
   assert.ok(execution.value?.sessionId, execution.error)
   const { sessionId } = execution.value
   assert.deepEqual(created, [{ sessionId, cwd, agentPreset: 'standard' }])
+  assert.deepEqual(permissions, [[sessionId, 'danger-full-access']])
   assert.equal(prompts.length, 1)
   assert.equal(prompts[0].mode, 'queue')
-  assert.ok(prompts[0].content[0].text.startsWith(executionSkill.content))
-  assert.ok(prompts[0].content[0].text.includes(planWritingInstructions))
-  assert.match(prompts[0].content[0].text, /src\/module\.ts:42/)
-  assert.match(prompts[0].content[0].text, /保存执行小结/)
+  const folder = join(cwd, '.dsh', 'yunxiao', digest(sessionId))
+  assert.equal(prompts[0].content[0].text,
+    '按定稿执行云效议题 TEST-1。任务清单：' + join(folder, 'task.json') + '\n读取清单中的 instructions 字段并执行。')
+  const task = JSON.parse(await readFile(join(folder, 'task.json'), 'utf8'))
+  assert.equal(task.instructions, executionSkill.content)
+  assert.match(task.instructions, /src\/module\.ts:42/)
+  assert.match(task.instructions, /保存执行小结/)
   assert.ok(registeredSkills.some(item => item.name === 'dy-workbench-docs'))
-  assert.match(prompts[0].content[0].text, /^## 影响范围与测试\r?\n面向测试人员.*区分已验证、验证失败和待验证项/m)
+  assert.match(task.instructions, /^## 影响范围与测试\r?\n面向测试人员.*区分已验证、验证失败和待验证项/m)
+  assert.doesNotMatch(task.instructions, /研发工作台文档|规则优先级|调研与执行方案/)
+  for (const section of templateFor('execution').sections) assert.ok(task.instructions.includes(section))
   assert.equal((await rpc('workbenchPlan', input)).value.issues[0].sessionId, sessionId)
   assert.equal(await readFile(join(cwd, '.dsh', 'yunxiao', digest(sessionId), 'plan.md'), 'utf8'), '# 当前方案')
   assert.ok((await rpc('voidPlan', input)).value?.voidedAt)
@@ -132,17 +142,13 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
   assert.deepEqual((await rpc('plans', input)).value, [])
 })
 
-test('调研和同会话修订均设置只读并要求使用相对路径和行号', async t => {
+test('调研只在首次创建任务会话，修订复用会话并保留只读调研指令', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'dy-research-writing-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
   const prompts = []
   const events = []
   let researchSkillAvailable = false
   const research = createResearch({
-    create: async ({ sessionId }) => ({ sessionId }),
-    resolveAgent: async id => ({ agent: { session: {
-      append: async (name, value) => { events.push([id, name, value]) },
-    } } }),
     prompt: async input => {
       prompts.push(input)
       events.push([input.sessionId, 'prompt'])
@@ -152,7 +158,10 @@ test('调研和同会话修订均设置只读并要求使用相对路径和行�
       const text = ['DRAFT-' + requestId, '# 方案', '```json', '[]', '```'].join('\n')
       return { reason: 'idle', output: { records: [{ event: { data: { message: { content: [{ type: 'text', text }] } } } }] } }
     },
-  }, cwd, async () => researchSkillAvailable)
+  }, cwd, async ({ sessionId }) => {
+    events.push([sessionId, 'create'])
+    return { sessionId }
+  }, async () => researchSkillAvailable)
   const batchId = digest('writing-test')
   const { rows: [{ sessionId }] } = research.start(cwd, [{ id: 'issue', title: '测试议题', text: '议题原文' }], batchId)
   await setImmediate()
@@ -163,20 +172,16 @@ test('调研和同会话修订均设置只读并要求使用相对路径和行�
   assert.equal(research.status({ batchId })[0].drafts.length, 2)
   const [draft, revision] = prompts.map(prompt => prompt.content[0].text)
   assert.ok(draft.startsWith(researchSkill.content))
+  assert.ok(draft.includes(planWritingInstructions))
   assert.ok(revision.startsWith('/' + researchSkill.name + '\n'))
+  assert.ok(!revision.includes(planWritingInstructions))
   assert.match(revision, /补充回归条件/)
-  const round = [
-    [sessionId, 'sandbox/mode', { mode: 'read-only' }],
-    [sessionId, 'approval/policy', { policy: 'never' }],
-    [sessionId, 'prompt'],
-  ]
-  assert.deepEqual(events, [...round, ...round])
+  assert.deepEqual(events, [[sessionId, 'create'], [sessionId, 'prompt'], [sessionId, 'prompt']])
   for (const prompt of prompts) {
     assert.equal(prompt.sessionId, sessionId)
     const text = prompt.content[0].text
-    assert.ok(text.includes(planWritingInstructions))
     assert.match(text, /不要调用任何写文件或修改仓库的工具/)
-    assert.match(text, /src\/module\.ts:42/)
+    assert.doesNotMatch(text, /规则优先级|编辑流程/)
   }
 })
 
@@ -214,8 +219,9 @@ test('同一计划并发执行只派发一次，宿主重启后复用会话', as
   assert.equal(prompts, 1)
 })
 
-for (const available of [true, false]) {
-  test(`首轮应答丢失后从计划按原定稿和原请求重试，执行技能可用=${available}`, async t => {
+for (const mode of ['技能可用', '技能不可用', '旧版待派发']) {
+  test('首轮应答丢失后从计划按原定稿和原请求重试 · ' + mode, async t => {
+    const available = mode !== '技能不可用'
     const cwd = await mkdtemp(join(tmpdir(), 'dy-launch-'))
     t.after(() => rm(cwd, { recursive: true, force: true }))
     const home = join(cwd, 'state')
@@ -248,7 +254,20 @@ for (const available of [true, false]) {
     markdown = '# 未定稿的修订'
     issue = { ...issue, description: '云效已修改', categoryId: 'Task' }
     const workflow = createWorkflow(options)
-    const { sessionId, text } = [...accepted.values()][0]
+    const attempt = [...accepted.values()][0]
+    const { sessionId } = attempt
+    const manifest = join(worktree, '.dsh', 'yunxiao', digest(sessionId), 'task.json')
+    const taskPrompt = '按定稿执行云效议题 REQ-12。任务清单：' + manifest
+    const expected = available ? '/' + executionSkill.name + '\n' + taskPrompt : taskPrompt + '\n读取清单中的 instructions 字段并执行。'
+    assert.equal(attempt.text, expected)
+    if (mode === '旧版待派发') {
+      const path = join(home, 'work-' + digest('org', key.project, key.id, await realpath(cwd)) + '.json')
+      const { requestText, ...binding } = JSON.parse(await readFile(path, 'utf8'))
+      assert.equal(requestText, attempt.text)
+      await writeFile(path, JSON.stringify({ ...binding, firstPrompt: expected }))
+      attempt.text += '\n\n' + legacyExecutionDocumentInstructions()
+      assert.match(attempt.text, /研发工作台文档[\s\S]*规则优先级/)
+    }
     await assert.rejects(workflow.executePlan(cwd, input, async () => ({ ...await prepare(), version: 3 })), /原定稿版本/)
     assert.equal((await workflow.executePlan(cwd, input, prepare)).sessionId, sessionId)
     assert.equal((await workflow.bindingFor(cwd, key)).dispatched, true)
@@ -256,14 +275,10 @@ for (const available of [true, false]) {
     assert.equal(creates, 1)
     assert.equal(discoveries, 1)
     assert.equal(accepted.size, 1)
-    const manifest = join(worktree, '.dsh', 'yunxiao', digest(sessionId), 'task.json')
-    assert.ok(text.includes(manifest))
-    assert.match(text, /tech-doc-style-chinese/)
-    assert.match(text, /不删除前置条件、适用范围、例外/)
-    assert.equal(text.startsWith('/' + executionSkill.name + '\n'), available)
-    assert.doesNotMatch(text, /other-skill/)
-    assert.match(available ? executionSkill.content : text, /用户要求提交.*议题编号/)
+    assert.doesNotMatch(attempt.text, /other-skill/)
     const task = JSON.parse(await readFile(manifest, 'utf8'))
+    assert.equal(task.instructions, available ? undefined : executionSkill.content)
+    assert.match(task.instructions ?? executionSkill.content, /用户要求提交.*议题编号/)
     assert.equal(task.reference, 'REQ-12')
     assert.equal(task.planVersion, 2)
     assert.equal(await readFile(task.plan, 'utf8'), approved)
