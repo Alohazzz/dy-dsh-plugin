@@ -101,6 +101,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     return serial(plansPath, async () => {
       const plans: Plan[] = await readJson(plansPath) ?? []
       const plan = plans.find(item => item.id === input.planId)
+      if (plan?.voidedAt) throw new Error('交付计划已作废')
       if (!plan?.members.includes(input.id)) throw new Error('议题不在当前交付计划中')
       await assertOpenPlan(archiveScope(root, api.organization, input.project, plan.id))
 
@@ -198,7 +199,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
   async function boundArchive(binding: Binding) {
     if (!binding.planId || !binding.workspacePath) return
     const scope = archiveScope(binding.workspacePath, binding.organization, binding.project, binding.planId)
-    const plan = (await plans(scope.root, scope.project, scope.organization)).find(row => row.id === scope.planId)
+    const plan = (await allPlans(scope.root, scope.project, scope.organization)).find(row => row.id === scope.planId)
     if (!plan) throw new Error('原执行计划已无法读取，请核对历史材料归属')
     await savePlanArchive(scope, plan)
     return scope
@@ -216,7 +217,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     if (input.commit !== undefined) {
       if (!/^[a-f0-9]{7,64}$/i.test(input.commit)) throw new Error('请输入 Git 提交 SHA')
       sha = await git(binding.cwd, ['rev-parse', '--verify', input.commit + '^{commit}'])
-      const branch = binding.branch || (await plans(scope.root, scope.project, scope.organization)).find(plan => plan.id === scope.planId)?.branch
+      const branch = binding.branch || (await allPlans(scope.root, scope.project, scope.organization)).find(plan => plan.id === scope.planId)?.branch
       if (!branch) throw new Error('原计划分支待核实')
       await git(binding.cwd, ['merge-base', '--is-ancestor', sha, 'refs/heads/' + branch])
       const refs: string[] = (await git(binding.cwd, ['show', '-s', '--format=%B', sha])).match(/[\p{L}\p{N}_-]+/gu) ?? []
@@ -400,8 +401,30 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     return key('plans', organization ?? (await client()).organization, project, await realpath(cwd))
   }
 
-  async function plans(cwd: string, project: string, organization?: string): Promise<Plan[]> {
+  async function allPlans(cwd: string, project: string, organization?: string): Promise<Plan[]> {
     return await readJson(await planPath(cwd, project, organization)) ?? []
+  }
+
+  async function plans(cwd: string, project: string, organization?: string) {
+    return (await allPlans(cwd, project, organization)).filter(plan => !plan.voidedAt)
+  }
+
+  async function voidPlan(cwd: string, project: string, organization: string, id: string) {
+    const path = await planPath(cwd, project, organization)
+    return serial(path, async () => {
+      const rows: Plan[] = await readJson(path) ?? []
+      const plan = rows.find(row => row.id === id)
+      if (!plan) throw new Error('当前工作区没有该交付计划')
+      if (!plan.voidedAt) {
+        await assertOpenPlan(archiveScope(cwd, organization, project, id))
+        plan.voidedAt = new Date().toISOString()
+        plan.revision = (plan.revision ?? 0) + 1
+        await atomicJson(path, rows)
+      }
+      const failure = await archivePlanError(cwd, organization, project, plan)
+      if (failure) throw new Error('计划已作废，档案同步失败，请重试：' + failure)
+      return { voidedAt: plan.voidedAt }
+    })
   }
 
   async function withPlan<T>(cwd: string, project: string, organization: string, id: string, run: (plan: Plan) => Promise<T>) {
@@ -410,6 +433,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
       const all: Plan[] = await readJson(path) ?? []
       const plan = all.find(row => row.id === id)
       if (!plan) throw new Error('当前工作区没有该交付计划')
+      if (plan.voidedAt) throw new Error('交付计划已作废')
       return run(plan)
     })
   }
@@ -421,6 +445,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
       const rows: Plan[] = await readJson(path) ?? []
       const plan = rows.find(row => row.id === id)
       if (!plan) throw new Error('当前工作区没有该交付计划')
+      if (plan.voidedAt) throw new Error('交付计划已作废')
       await assertOpenPlan(archiveScope(cwd, organization, project, id))
       const delivery = await update(plan)
       if (delivery !== plan.delivery) {
@@ -469,7 +494,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     return serial(path, async () => {
       await folder()
       const all: Plan[] = await readJson(path) ?? []
-      if (all.some(plan => plan.name === name)) throw new Error('计划名称已存在')
+      if (all.some(plan => !plan.voidedAt && plan.name === name)) throw new Error('计划名称已存在')
       const plan: Plan = { name, branch, end: input.end, id: randomUUID(), members: [],
         revision: 1,
         ...(typeof input.goal === 'string' && input.goal.trim() && { goal: input.goal.trim() }),
@@ -505,9 +530,10 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
       const all: Plan[] = await readJson(path) ?? []
       const plan = all.find(item => item.id === planId)
       if (!plan) throw new Error('当前工作区没有该交付计划')
+      if (plan.voidedAt) throw new Error('交付计划已作废')
       await assertOpenPlan(archiveScope(cwd, api.organization, project, planId))
       for (const id of new Set(ids)) {
-        if (all.some(item => item.members.includes(id))) {
+        if (all.some(item => !item.voidedAt && item.members.includes(id))) {
           results.push({ id, result: '已加入' })
           continue
         }
@@ -551,6 +577,7 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
       const all: Plan[] = await readJson(path) ?? []
       const plan = all.find(item => item.id === planId)
       if (!plan) throw new Error('当前工作区没有该交付计划')
+      if (plan.voidedAt) throw new Error('交付计划已作废')
       await assertOpenPlan(archiveScope(cwd, api.organization, project, planId))
       if (plan.members.includes(id)) {
         const binding = await bindingFor(cwd, { project, id }, api.organization)
@@ -576,5 +603,5 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
   }
 
   return { executePlan, bindingFor, archiveExecution, executionProgress, preview, publish, transition, checkTransition, pendingTransition, plans, createPlan,
-    addToPlan, removeFromPlan, updateDelivery, withPlan }
+    allPlans, voidPlan, addToPlan, removeFromPlan, updateDelivery, withPlan }
 }

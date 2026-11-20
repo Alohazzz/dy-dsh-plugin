@@ -22,6 +22,25 @@ async function addPlannedIssue(workflow, cwd, { project, id }) {
   return { project, id, planId: plan.id }
 }
 
+test('作废保留历史并释放议题，重试和过期写入不会改变作废结果', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'dy-void-plan-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  const api = { organization: 'org', get: async id => ({ id, spaceId: 'project' }), schedule: async () => {} }
+  const options = { home: join(cwd, 'state'), host: {}, branchExists: async () => {}, client: () => api }
+  const workflow = createWorkflow(options)
+  const { planId } = await addPlannedIssue(workflow, cwd, { project: 'project', id: 'issue' })
+  const [receipt, retry] = await Promise.all([1, 2].map(() => workflow.voidPlan(cwd, 'project', 'org', planId)))
+  assert.deepEqual(receipt, retry)
+  assert.deepEqual(await createWorkflow(options).plans(cwd, 'project'), [])
+  const [archived] = (await archiveIndex(archiveScope(cwd, 'org', 'project', planId))).plans
+  assert.equal(archived.voidedAt, receipt.voidedAt)
+  assert.deepEqual(archived.members, ['issue'])
+  await assert.rejects(workflow.addToPlan(cwd, 'project', planId, ['other']), /已作废/)
+  await assert.rejects(workflow.removeFromPlan(cwd, 'project', planId, 'issue'), /已作废/)
+  const next = await addPlannedIssue(workflow, cwd, { project: 'project', id: 'issue' })
+  assert.notEqual(next.planId, planId)
+})
+
 test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧入口', async t => {
   const cwd = await realpath(await mkdtemp(join(tmpdir(), 'dy-plan-rpc-')))
   t.after(() => rm(cwd, { recursive: true, force: true }))
@@ -106,6 +125,9 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
   assert.match(prompts[0].content[0].text, /^## 影响范围与测试\r?\n面向测试人员.*区分已验证、验证失败和待验证项/m)
   assert.equal((await rpc('workbenchPlan', input)).value.issues[0].sessionId, sessionId)
   assert.equal(await readFile(join(cwd, '.dsh', 'yunxiao', digest(sessionId), 'plan.md'), 'utf8'), '# 当前方案')
+  assert.ok((await rpc('voidPlan', input)).value?.voidedAt)
+  assert.match((await rpc('executePlanIssue', input)).error, /已作废/)
+  assert.deepEqual((await rpc('plans', input)).value, [])
 })
 
 test('调研和同会话修订均设置只读并要求使用相对路径和行号', async t => {

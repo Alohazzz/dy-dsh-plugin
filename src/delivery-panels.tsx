@@ -571,6 +571,33 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </div>
   }
 
+  function VoidPlan({ row, close, saved }: { row: PlanRow; close(): void; saved(): void }) {
+    const [busy, setBusy] = useState(false)
+    const [error, setError] = useState('')
+    async function submit() {
+      setBusy(true)
+      setError('')
+      try {
+        await rpc('voidPlan', planKey(row))
+        saved()
+      } catch (failure) {
+        setError(errorText(failure))
+        setBusy(false)
+      }
+    }
+    return <Modal label="作废交付计划" busy={busy} close={close}>
+      <h2>作废交付计划</h2>
+      <p>确认作废「{row.plan.name}」？作废后可在“已作废”列表查看记录。</p>
+      {row.plan.members.length > 0 && <p>计划内的 {row.plan.members.length} 个议题可重新加入其他计划。云效排期保留。</p>}
+      <p>已有分支、工作树和合并请求均会保留。</p>
+      {error && <Problem error={error} />}
+      <div className="dy-yx-actions dy-delivery-footer">
+        <button disabled={busy} onClick={close}>取消</button>
+        <button className="dy-mr-danger" disabled={busy} onClick={submit}>{busy ? '正在作废…' : '确认作废'}</button>
+      </div>
+    </Modal>
+  }
+
   function Plans({ selected, revision, openPlan, openMr, changed, renderCreate, openSession }: {
     selected?: PlanKey; revision: number; openSession(id: string): void; openPlan(plan?: PlanKey): void; openMr(ref: MrRef): void; changed(): void
     renderCreate(scope: Scope, meta: Meta, close: () => void, saved: (plan?: Plan, scope?: Scope) => void): ReactType.ReactNode
@@ -579,11 +606,14 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const [scope, setScope] = useState<Scope>({ project: '', workspaceId: '' })
     const [query, setQuery] = useState('')
     const [phase, setPhase] = useState('')
+    const [showVoided, setShowVoided] = useState(false)
+    const [voiding, setVoiding] = useState<PlanRow>()
+    const [notice, setNotice] = useState('')
     const [creating, setCreating] = useState(false)
     const result = useRead<PlanRow[]>('workbenchPlans', !selected && meta.value && !meta.value.setupError ? scope : undefined, revision)
     const phases = ['分支待配置', '未提 MR', ...Object.values(states).map(value => value === '已合并' ? '代码已合并' : value)]
     const term = query.trim().toLowerCase()
-    const rows = (result.value || []).filter(row => (!phase || planStatus(row.plan, row.mrStatus) === phase) && [
+    const rows = (result.value || []).filter(row => Boolean(row.plan.voidedAt) === showVoided && (!phase || planStatus(row.plan, row.mrStatus) === phase) && [
       row.plan.name, row.plan.branch, row.plan.delivery?.path, row.plan.delivery?.target || row.plan.targetBranch,
     ].some(value => value?.toLowerCase().includes(term)))
     return <main className="dy-yx dy-delivery">
@@ -603,25 +633,36 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
             <label>目标工作区 <select value={scope.workspaceId} onChange={event => setScope({ ...scope, workspaceId: event.target.value })}>
               <option value="">全部工作区</option>{meta.value?.workspaces.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}
             </select></label>
+            <label>计划状态 <select value={showVoided ? 'voided' : 'valid'} onChange={event => setShowVoided(event.target.value === 'voided')}>
+              <option value="valid">未作废</option><option value="voided">已作废</option>
+            </select></label>
             <label>代码交付 <select value={phase} onChange={event => setPhase(event.target.value)}>
               <option value="">全部进度</option>{phases.map(value => <option key={value}>{value}</option>)}
             </select></label>
             <input type="search" aria-label="搜索交付计划" placeholder="搜索计划、仓库或分支" value={query} onChange={event => setQuery(event.target.value)} />
           </div>
           {result.error && <Problem error={result.error} retry={result.retry} />}
-          <Table headers={['交付计划', '仓库 / 交付分支', '计划完成日', '议题数', '代码交付']}>
+          {notice && <p role="status" className="dy-yx-notice">{notice}</p>}
+          <Table headers={['交付计划', '仓库 / 交付分支', '计划完成日', '议题数', '代码交付', showVoided ? '作废时间' : '操作']}>
             {rows.map(row => <tr key={JSON.stringify(planKey(row))}>
-              <td><button className="dy-delivery-link" onClick={() => openPlan(planKey(row))}>{row.plan.name}</button>
+              <td>{row.plan.voidedAt ? row.plan.name : <button className="dy-delivery-link" onClick={() => openPlan(planKey(row))}>{row.plan.name}</button>}
                 <small>{row.projectName} · {row.workspaceName}</small></td>
               <td><small>{row.plan.delivery?.path || (row.plan.repositoryKey === '.' ? '工作区根仓库' : row.plan.repositoryKey)}</small>
                 <Branches source={row.plan.branch} target={row.plan.delivery?.target || row.plan.targetBranch} /></td>
               <td>{row.plan.end}</td><td className="dy-delivery-number">{row.plan.members.length}</td>
-              <td><Status label={planStatus(row.plan, row.mrStatus)} /></td></tr>)}
-            {!rows.length && <tr><td colSpan={5} role="status">{result.value ? '没有符合条件的交付计划' :
+              <td><Status label={planStatus(row.plan, row.mrStatus)} /></td>
+              <td>{row.plan.voidedAt ? new Date(row.plan.voidedAt).toLocaleString() :
+                <button className="dy-mr-danger" onClick={() => setVoiding(row)}>作废</button>}</td></tr>)}
+            {!rows.length && <tr><td colSpan={6} role="status">{result.value ? '没有符合条件的交付计划' :
               meta.error || meta.value?.setupError || result.error ? '暂时无法读取交付计划' : '正在读取交付计划…'}</td></tr>}
           </Table>
           {result.value && <p className="dy-delivery-count">共 {rows.length} 个计划</p>}
         </section>
+        {voiding && <VoidPlan row={voiding} close={() => setVoiding(undefined)} saved={() => {
+          setNotice('已作废「' + voiding.plan.name + '」')
+          setVoiding(undefined)
+          changed()
+        }} />}
         {creating && meta.value && renderCreate(scope, meta.value, () => setCreating(false), (plan, createdScope) => {
           setCreating(false); changed()
           if (plan) openPlan({ ...(createdScope || scope), planId: plan.id })
@@ -633,6 +674,9 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
   function Requests({ revision, active, openMr }: { revision: number; active: boolean; openMr(ref: MrRef, origin: Queue): void }) {
     const [queue, setQueue] = useState<Queue>('mine')
     const [workspaceId, setWorkspace] = useState('')
+    const [showVoided, setShowVoided] = useState(false)
+    const [voiding, setVoiding] = useState<PlanRow>()
+    const [notice, setNotice] = useState('')
     const [creating, setCreating] = useState(false)
     const [query, setQuery] = useState('')
     const [repository, setRepository] = useState('')

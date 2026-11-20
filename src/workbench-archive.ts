@@ -13,7 +13,7 @@ type StoredDocument = { event: string; type: Kind; file: string; version: number
   participation?: string; commitSha?: string; reportStatus?: string; patch?: string; supersedes?: string[]; executionSession?: string;
   evidence?: string; verification?: string; pendingVerification?: string }
 type IssueManifest = ArchiveIssue & { documents: StoredDocument[]; reviews?: unknown[] }
-type PlanManifest = { id: string; name: string; branch: string; end: string; repositoryKey?: string; goal?: string;
+type PlanManifest = { voidedAt?: string; id: string; name: string; branch: string; end: string; repositoryKey?: string; goal?: string;
   history?: Plan['history']; members: string[]; delivery?: Plan['delivery']; documents: StoredDocument[]; revision?: number }
 
 const locks = new Map<string, Promise<unknown>>()
@@ -161,8 +161,8 @@ export async function savePlanArchive(scope: ArchiveScope, plan: Plan) {
     const existing = await safeRead<PlanManifest>(path)
     if (existing && existing.id !== plan.id) throw new Error(`档案计划标识冲突：${path}`)
     if ((existing?.revision ?? 0) <= (plan.revision ?? 0)) {
-      const { id, name, branch, end, repositoryKey, goal, history, members, delivery, revision } = plan
-      const data = { ...existing, id, name, branch, end, repositoryKey, goal, history, members, delivery, revision,
+      const { id, name, branch, end, repositoryKey, goal, history, members, delivery, voidedAt, revision } = plan
+      const data = { ...existing, id, name, branch, end, repositoryKey, goal, history, members, delivery, voidedAt, revision,
         documents: existing?.documents ?? [] }
       if (JSON.stringify(existing) !== JSON.stringify(data)) await atomicJson(path, data)
     }
@@ -183,6 +183,7 @@ export async function assertOpenPlan(scope: ArchiveScope) {
   const folder = await namedDirectory(plans, scope.planId, false)
   if (!folder) return
   const manifest = await safeRead<PlanManifest>(join(folder, 'plan.json'))
+  if (manifest?.voidedAt) throw new Error('交付计划已作废')
   if (manifest?.documents.some(document => document.type === 'completion' && document.reportStatus === 'final')) {
     throw new Error('交付计划已关闭')
   }

@@ -76,6 +76,10 @@ def check(page):
             value = dict(localId=5, url='https://codeup.aliyun.com/test', existing=False, pushed=args['needPush'])
         elif method == 'workbenchPlans':
             value = [plan_row(plan) for plan in plans.values()]
+        elif method == 'voidPlan':
+            assert args == dict(project='project', workspaceId='w', planId='created')
+            plans['created']['voidedAt'] = '2026-11-20T03:00:00Z'
+            value = dict(voidedAt=plans['created']['voidedAt'])
         elif method == 'workbenchPlan':
             plan = plans[args['planId']]
             candidates = [dict(localId=5, title='刷新术语缓存', target='release', url='')] if plan['id'] == 'term' and not binding.get('mr') else []
@@ -321,4 +325,20 @@ def check(page):
     page.get_by_role('button', name='返回计划', exact=True).click()
     expect(page.get_by_text('已关闭', exact=True)).to_be_visible()
     assert actions == ['approve', 'merge', 'check', 'close']
+    page.get_by_role('button', name='返回交付计划', exact=True).click()
+    page.emulate_media(color_scheme='dark')
+    page.set_viewport_size(dict(width=820, height=760))
+    row = page.get_by_role('row').filter(has_text='术语复核')
+    row.get_by_role('button', name='作废', exact=True).click()
+    dialog = page.get_by_role('dialog', name='作废交付计划')
+    expect(dialog).to_contain_text('术语复核')
+    dialog.get_by_role('button', name='取消').click()
+    assert 'voidedAt' not in plans['created']
+    row.get_by_role('button', name='作废', exact=True).click()
+    dialog.get_by_role('button', name='确认作废').click()
+    expect(row).to_have_count(0)
+    page.get_by_label('计划状态').select_option('voided')
+    page.get_by_role('button', name='刷新', exact=True).click()
+    expect(row).to_be_visible()
+    expect(row.get_by_role('button', name='作废', exact=True)).to_have_count(0)
     print('PASS | plan and MR entry points, approval, merge and status check, close, and plan refresh')

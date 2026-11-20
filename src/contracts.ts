@@ -48,7 +48,7 @@ export type PlanHistory = {
 export type Plan = {
   id: string; name: string; branch: string; end: string; members: string[]; repositoryKey?: string; delivery?: PlanDelivery
   kind?: PlanKind; version?: string; baseBranch?: string; targetBranch?: string; worktree?: string
-  goal?: string; history?: PlanHistory; archiveError?: string; revision?: number
+  voidedAt?: string; goal?: string; history?: PlanHistory; archiveError?: string; revision?: number
 }
 export type PlanCreate = Pick<Plan, 'name' | 'branch' | 'end' | 'goal'> & {
   kind: PlanKind; version: string; baseBranch: string; targetBranch: string; useExistingRemote: boolean; worktreeDir?: string

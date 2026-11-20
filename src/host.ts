@@ -282,12 +282,13 @@ export function apply(ctx: Context) {
   function updateDelivery(api: Client, input: PlanKey, update: Parameters<typeof workflow.updateDelivery>[4]) {
     return workflow.updateDelivery(planDirectory(input), input.project, api.organization, input.planId, update)
   }
-  async function planRows(api: Client, filter: { project?: string; workspaceId?: string } = {}): Promise<PlanRow[]> {
+  async function planRows(api: Client, filter: { project?: string; workspaceId?: string } = {}, includeVoided = false): Promise<PlanRow[]> {
     const projects = options(await api.projects()).filter(project => !filter.project || project.id === filter.project)
     const workspaces = filter.workspaceId ? [workspace(filter.workspaceId)] : ctx.workspaceRegistry.list()
     const scopes = workspaces.flatMap(target => projects.map(project => ({ target, project })))
+    const list = includeVoided ? workflow.allPlans : workflow.plans
     const groups = await inBatches(scopes, async ({ target, project }) =>
-      (await workflow.plans(target.path, project.id, api.organization)).map(plan => ({
+      (await list(target.path, project.id, api.organization)).map(plan => ({
         plan, planId: plan.id, project: project.id, projectName: project.name, workspaceId: target.id, workspaceName: target.title,
       })))
     return groups.flat().sort((a, b) => a.plan.end.localeCompare(b.plan.end) || a.plan.name.localeCompare(b.plan.name))
@@ -380,7 +381,10 @@ export function apply(ctx: Context) {
             historicalPaths: hints.map(hint => hint.path), participation: plan.history?.changes.findLast(change =>
               change.issueId === id && ['initial', 'added'].includes(change.kind))?.id } }
       })
-      research.start(cwd, inputs, batchId)
+      await workflow.withPlan(scope.root, scope.project, scope.organization, scope.planId, async current => {
+        await assertOpenPlan(scope)
+        research.start(cwd, inputs.filter(issue => current.members.includes(issue.id)), batchId)
+      })
       return { batchId, rows: research.status({ batchId }).filter(row => row.issueId && plan.members.includes(row.issueId)) }
     },
     async executePlanIssue(input: PlanKey & { id: string; version: number }) {
@@ -481,12 +485,16 @@ export function apply(ctx: Context) {
     },
     async workbenchPlans(filter: { project?: string; workspaceId?: string }) {
       const api = await settings.client()
-      return inBatches(await planRows(api, filter), async row => {
+      return inBatches(await planRows(api, filter, true), async row => {
         const mr = row.plan.delivery?.mr
         if (!mr) return row
         const status = await api.codeup.detail(mr).then(result => result.status, () => 'UNAVAILABLE')
         return { ...row, mrStatus: status || 'UNAVAILABLE' }
       })
+    },
+    async voidPlan(input: PlanKey) {
+      const api = await settings.client()
+      return workflow.voidPlan(planDirectory(input), input.project, api.organization, input.planId)
     },
     async workbenchPlan(input: PlanKey) {
       return planDetails(await settings.client(), input)
