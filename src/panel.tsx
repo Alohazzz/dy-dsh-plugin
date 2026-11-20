@@ -2,6 +2,7 @@ import { createDeliveryPanels } from './delivery-panels.tsx'
 import { createPlanDialog } from './create-plan-dialog.tsx'
 import type * as ReactType from 'react'
 import { createSkillPanel } from './skill-panel.tsx'
+import { issueCategories as categories, issueCategory, issueStatusTone } from './issue-badges.ts'
 import type { ConnectionSettings, Details, Issue, Meta, MrRef, Option, Plan, PlanKey, PlanResult, Preview } from './contracts.ts'
 
 type Navigation = { openSession(id: string): void }
@@ -37,7 +38,6 @@ function dateRange(kind: string): [string, string] {
   const monday = today.getTime() - ((today.getUTCDay() + 6) % 7) * 86400000
   return [dayKey(new Date(monday)), dayKey(new Date(monday + 6 * 86400000))]
 }
-const categories: Record<string, string> = { Req: '需求', Bug: '缺陷', Task: '任务' }
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 
 const emptyConditions = {
@@ -168,13 +168,8 @@ window.__ModuleLoader__.load({
       </>
     }
 
-    const statusTones: Record<string, string> = {
-      待处理: 'blue', 待确认: 'blue', 已确认: 'blue',
-      待开发: 'green', 开发中: 'green', 开发完成: 'green', 待测试: 'green', 测试中: 'green', 测试完成: 'green',
-      测试打回: 'orange', 发布中: 'orange', 验收完成: 'orange', 触发重置: 'orange', 发布完成: 'orange',
-    }
     function StatusBadge({ name }: { name: string }) {
-      return <span className="dy-yx-status" data-tone={statusTones[name] || 'grey'}>{name}</span>
+      return <span className="dy-yx-status" data-tone={issueStatusTone(name)}>{name}</span>
     }
 
     const actionPaths = {
@@ -344,7 +339,7 @@ window.__ModuleLoader__.load({
         {project && <>
           <div className="dy-yx-bar dy-yx-filters" aria-label="筛选议题">
             <select aria-label="议题类型" value={category} onChange={event => updateSelection({ category: event.target.value })}>
-              <option value="">全部类型</option>{Object.entries(categories).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+              <option value="">全部类型</option>{Object.entries(categories).map(([id, { label }]) => <option key={id} value={id}>{label}</option>)}
             </select>
             <label><input type="checkbox" checked={mine} onChange={event => updateSelection({ mine: event.target.checked })} /> 我负责的</label>
             <Multi title="状态" options={opts.statuses} values={status} change={status => updateSelection({ status })} />
@@ -386,7 +381,7 @@ window.__ModuleLoader__.load({
                 <div>
                   <button className="dy-yx-title" onClick={() => setActive(issue)}>{issue.title || issue.reference}</button>
                   <div className="dy-yx-meta"><a href={issue.url} target="_blank" rel="noreferrer" title="在云效打开">{issue.reference}</a>
-                    <span>{categories[issue.category] || issue.category}</span><StatusBadge name={issue.state.name} />
+                    <span>{issueCategory(issue.category)?.label || issue.category}</span><StatusBadge name={issue.state.name} />
                     {[issue.product, issue.priority, issue.owner, issue.created && '创建 ' + issue.created].filter(Boolean).map((item, i) => <span key={i}>{item}</span>)}
                     {issue.deadline && <span className={issue.deadline < today && !['已完成','已关闭'].includes(issue.state.name) ? 'dy-yx-overdue' : ''}>截止 {issue.deadline}</span>}
                     {issue.plan && (issue.planId ? <button className="dy-delivery-link" onClick={() =>

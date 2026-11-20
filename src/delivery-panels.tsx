@@ -12,6 +12,7 @@ import type { deliveryOptions, mrRepos } from './merge-request.ts'
 import type { CompletionAction, workbenchCompletion } from './workbench-completion.ts'
 import { createResearchPrototype } from './research-prototype-panel.tsx'
 import { createMrPanel, type Rpc } from './mr-panel.tsx'
+import { issueCategory, issueStatusTone, type BadgeTone } from './issue-badges.ts'
 
 type Codeup = ReturnType<typeof codeupApi>
 type Mr = Awaited<ReturnType<Codeup['detail']>>
@@ -25,6 +26,14 @@ const states: Record<string, string> = {
 }
 const mrActionLabels: Record<MrAction, string> = { approve: '批准', merge: '合并', close: '关闭 MR' }
 const mrActionReceipts: Record<MrAction, string> = { approve: '评审已通过', merge: 'MR 已合并', close: 'MR 已关闭' }
+const proposalStatusTones: ReadonlyMap<string, BadgeTone> = new Map([
+  ['调研中', 'blue'], ['修订中', 'blue'], ['Agent 调研中', 'blue'], ['Agent 修订中', 'blue'],
+  ['正在派发', 'blue'], ['已送达 · 等待执行', 'blue'], ['正在收取草稿', 'blue'], ['已派发', 'blue'],
+  ['待核实问题清单', 'orange'], ['待送审', 'orange'], ['待审核', 'orange'], ['小结待确认', 'orange'],
+  ['无待确认事项', 'green'], ['已定稿', 'green'], ['小结已确认', 'green'], ['已登记提交', 'green'],
+  ['未送达', 'red'], ['调研失败', 'red'], ['修订失败', 'red'], ['状态不可用', 'red'],
+])
+const proposalStatusTone = (label: string): BadgeTone => label.startsWith('待答疑') ? 'orange' : proposalStatusTones.get(label) ?? 'grey'
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 const renderReport = (markdown: string) => DOMPurify.sanitize(marked.parse(markdown, { async: false }), {
   ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'strong', 'em', 'ul', 'ol', 'li', 'code', 'pre', 'blockquote',
@@ -59,9 +68,9 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     return { ...(result?.key === key ? result : undefined), retry: () => retry(value => value + 1) }
   }
 
-  function Status({ label }: { label: string }) {
-    const tone = label.includes('已合并') ? 'green' : label === '待审核' || label === '待合并' ? 'orange' : 'grey'
-    return <span className="dy-yx-status" data-tone={tone}>{label}</span>
+  function Status({ label, tone }: { label: string; tone?: BadgeTone }) {
+    const color = tone ?? (label.includes('已合并') ? 'green' : label === '待审核' || label === '待合并' ? 'orange' : 'grey')
+    return <span className="dy-yx-status" data-tone={color}>{label}</span>
   }
   function Branches({ source, target }: { source: string; target?: string }) {
     return <span className="dy-delivery-branches"><code>{source || '—'}</code>
@@ -249,15 +258,24 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     finalize(row: ResearchSummary): void; execute(id: string, version: number): void; executing?: string; executionSupported?: boolean
     busy: boolean; unavailable: boolean; legacy: boolean; closed: boolean; openSession(id: string): void
   }) {
-    return <Table headers={['议题编号', '标题', '负责人', '云效状态', '方案状态', '操作']}>
+    return <Table headers={['议题编号', '类型', '标题', '负责人', '云效状态', '方案状态', '操作']}>
       {issues.map(issue => {
         const row = summaries?.find(s => s.issueId === issue.id)
         const executionVersion = issue.executionVersion ?? (row?.label === '已定稿' ? row.version : undefined)
+        const category = issueCategory(issue.category || '')
+        const proposalStatus = summaries ? row?.label || '未调研' : unavailable ? '状态不可用' : '读取中…'
+        const executionStatus = issue.executionStage && {
+          dispatched: '已派发', ready: '小结待确认', confirmed: '小结已确认', submitted: '已登记提交',
+        }[issue.executionStage]
         return <tr key={issue.id}><td>{issue.url ? <a href={issue.url} target="_blank" rel="noreferrer">{issue.reference}</a> : issue.reference}</td>
-        <td>{issue.error || issue.title || '—'}</td><td>{issue.owner || '—'}</td><td>{issue.state.name || '—'}</td>
-        <td>{summaries ? <div className="dy-plan-issue-actions"><Status label={row?.label || '未调研'} />{row?.progress && row.progress !== row.label && <Status label={row.progress} />}
-          {issue.executionStage && <Status label={{ dispatched: '已派发', ready: '小结待确认', confirmed: '小结已确认', submitted: '已登记提交' }[issue.executionStage]} />}
-        </div> : unavailable ? '状态不可用' : '读取中…'}</td>
+        <td>{issue.category ? <Status label={category?.label || issue.category} tone={category?.tone ?? 'grey'} /> : '—'}</td>
+        <td>{issue.error || issue.title || '—'}</td><td>{issue.owner || '—'}</td>
+        <td>{issue.state.name ? <Status label={issue.state.name} tone={issueStatusTone(issue.state.name)} /> : '—'}</td>
+        <td><div className="dy-plan-issue-actions">
+          <Status label={proposalStatus} tone={proposalStatusTone(proposalStatus)} />
+          {row?.progress && row.progress !== row.label && <Status label={row.progress} tone={proposalStatusTone(row.progress)} />}
+          {summaries && executionStatus && <Status label={executionStatus} tone={proposalStatusTone(executionStatus)} />}
+        </div></td>
         <td><div className="dy-plan-issue-actions">
           <button type="button" className="dy-delivery-link" onClick={() => documents(issue)}>过程文档</button>
           {row && (row.version > 0 || row.label === '调研失败') && <button className="dy-delivery-link" onClick={() => open(issue.id)}>
@@ -273,7 +291,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
             </button>}
           {!closed && <button type="button" className="dy-delivery-link" aria-label={'移出计划 ' + issue.reference}
             onClick={() => remove(issue)}>移出计划</button>}</div></td></tr>})}
-      {!issues.length && <tr><td colSpan={6} className="dy-delivery-issue-empty">暂无计划议题</td></tr>}
+      {!issues.length && <tr><td colSpan={7} className="dy-delivery-issue-empty">暂无计划议题</td></tr>}
     </Table>
   }
 
@@ -358,6 +376,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const reportMarkdown = completion.value?.markdown
     const reportHtml = useMemo(() => reportMarkdown && renderReport(reportMarkdown), [reportMarkdown])
     const closed = report?.reportStatus === 'final'
+    const reportHeading = useRef<HTMLHeadingElement>(null)
     const [reportAction, setReportAction] = useState<CompletionAction>()
     const [reportNote, setReportNote] = useState('')
     const [reportBusy, setReportBusy] = useState(false)
@@ -463,18 +482,30 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       <header className="dy-plan-header">
         <div className="dy-yx-actions dy-plan-toolbar">
           <button type="button" className="dy-delivery-link" onClick={back}><span aria-hidden="true">← </span>返回交付计划</button>
-          <button type="button" onClick={result.retry}>刷新</button>
+          <div className="dy-yx-actions">
+            {detail?.plan.delivery?.mr && <button type="button" className="dy-delivery-link"
+              onClick={() => reportHeading.current?.focus()}>计划完成报告</button>}
+            <button type="button" onClick={result.retry}>刷新</button>
+          </div>
         </div>
-        {detail?.plan.goal && <p>{detail.plan.goal}</p>}
         <div className="dy-plan-title"><h2>{detail?.plan.name || '交付计划详情'}</h2>
-          {report?.reportStatus === 'final' && <Status label="计划已关闭" />}
+          {closed && <Status label="计划已关闭" />}
           {detail && <Status label={planStatus(detail.plan, detail.mrStatus)} />}
+          {detail && <dl className="dy-plan-meta">
+            <div><dt>计划完成日</dt><dd>{detail.plan.end}</dd></div>
+          </dl>}
         </div>
-        {detail && <dl className="dy-plan-meta">
-          <div><dt>计划完成日</dt><dd>{detail.plan.end}</dd></div>
-          <div><dt>云效项目</dt><dd>{meta?.projects.find(row => row.id === scope.project)?.name || scope.project}</dd></div>
-          <div><dt>目标工作区</dt><dd>{meta?.workspaces.find(row => row.id === scope.workspaceId)?.name || scope.workspaceId}</dd></div>
-        </dl>}
+        {detail && <details className="dy-plan-info">
+          <summary>计划信息</summary>
+          {detail.plan.goal && <p>{detail.plan.goal}</p>}
+          <dl className="dy-plan-meta">
+            <div><dt>云效项目</dt><dd>{meta?.projects.find(row => row.id === scope.project)?.name || scope.project}</dd></div>
+            <div><dt>目标工作区</dt><dd>{meta?.workspaces.find(row => row.id === scope.workspaceId)?.name || scope.workspaceId}</dd></div>
+            <div><dt>仓库</dt><dd>{detail.plan.delivery?.path || (detail.plan.repositoryKey === '.' ? '工作区根仓库' : detail.plan.repositoryKey) || '待配置'}</dd></div>
+            {detail.plan.baseBranch && <div><dt>基础分支</dt><dd>{detail.plan.baseBranch}</dd></div>}
+            {detail.plan.kind && <div><dt>代码目录</dt><dd>{detail.plan.worktree || '主工作区'}</dd></div>}
+          </dl>
+        </details>}
       </header>
       {result.error && <Problem error={result.error} retry={result.retry} />}
       {detail?.archiveError && <Problem error={detail.archiveError} retry={() => {
@@ -482,8 +513,15 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       }} />}
       {!detail && !result.error && <p role="status">正在读取交付计划…</p>}
       {notice && <p role="status" className="dy-yx-notice">{notice}</p>}
-      {detail && <><section className="dy-delivery-card dy-delivery-section dy-plan-delivery" aria-label="交付分支">
-        <div className="dy-yx-actions dy-plan-toolbar"><h3>交付分支</h3>
+      {detail && <><section className="dy-delivery-card dy-delivery-section" aria-label="交付分支">
+        <div className="dy-yx-actions dy-plan-toolbar">
+          <div className="dy-plan-title">
+            <h3>交付分支</h3>
+            <dl className="dy-plan-meta">
+              <div><dt>源分支</dt><dd><code>{detail.plan.branch || '—'}</code></dd></div>
+              <div><dt>目标分支</dt><dd>{target ? <code>{target}</code> : <small>待配置</small>}</dd></div>
+            </dl>
+          </div>
           <div className="dy-yx-actions">{!detail.plan.delivery?.mr && <button
             className={!detail.plan.delivery ? 'dy-yx-primary' : undefined} onClick={() => setModal('configure')}>配置交付分支</button>}
             {detail.plan.delivery?.mr ? <button className="dy-yx-primary" onClick={() => openMr(detail.plan.delivery!.mr!)}>
@@ -492,19 +530,20 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
               onClick={() => setModal(detail.candidates.length ? 'link' : 'create')}>
               {detail.candidates.length ? '关联已有 MR' : '发起合并请求'}</button>}</div>
         </div>
-        <dl className="dy-plan-branches">
-          <div><dt>源分支</dt><dd><code>{detail.plan.branch || '—'}</code></dd></div>
-          <div className="dy-plan-target"><dt>目标分支</dt><dd><span aria-hidden="true">→</span>
-            {target ? <code>{target}</code> : <small>待配置</small>}</dd></div>
-        </dl>
-        <dl className="dy-plan-meta">
-          <div><dt>仓库</dt><dd>{detail.plan.delivery?.path || (detail.plan.repositoryKey === '.' ? '工作区根仓库' : detail.plan.repositoryKey) || '待配置'}</dd></div>
-          {detail.plan.baseBranch && <div><dt>基础分支</dt><dd>{detail.plan.baseBranch}</dd></div>}
-          {detail.plan.kind && <div><dt>代码目录</dt><dd>{detail.plan.worktree || '主工作区'}</dd></div>}
-        </dl>{detail.mrError && <Problem error={detail.mrError} retry={result.retry} />}
+        {detail.mrError && <Problem error={detail.mrError} retry={result.retry} />}
       </section>
+      <section className="dy-delivery-card" aria-label="计划议题">
+        <div className="dy-delivery-section dy-plan-title"><h3>计划议题</h3><small>{detail.plan.members.length} 条</small><button disabled={closed || !needsResearch || startingResearch} onClick={startResearch}>{startingResearch ? '正在派发…' : '方案调研'}</button>
+          <button disabled={closed || !questionCount} onClick={() => setAnswering(true)}>批量答疑{questionCount > 0 && '（' + questionCount + '）'}</button></div>
+        {(batch.error || summaryError) && <Problem error={batch.error || summaryError!} retry={batch.retry} />}
+        {startError && <Problem error={startError} retry={startResearch} />}
+        {executionError && <Problem error={executionError} />}
+        {executionUnavailable && <p role="status" className="dy-yx-notice">请更新研发工作台插件并重启 DSH，再开始执行。</p>}
+        <IssueTable openSession={openSession} issues={detail.issues.map(issue => ({ ...issue, sessionId: executionSessions[issue.id] ?? issue.sessionId }))}
+          execute={execute} executing={executing} executionSupported={detail.executionSupported} remove={setRemoving} archive={setArchiving} documents={setDocumentIssue} summaries={summaries}
+          busy={busy} unavailable={!!(summaryError || batch.error)} legacy={legacy} closed={closed} open={setPreviewIssue} finalize={finalize} /></section>
       {detail.plan.delivery?.mr && <section className="dy-delivery-card dy-delivery-section" aria-label="计划完成报告">
-        <div className="dy-yx-actions dy-plan-toolbar"><h3>计划完成报告</h3>
+        <div className="dy-yx-actions dy-plan-toolbar"><h3 ref={reportHeading} tabIndex={-1}>计划完成报告</h3>
           {report && <small>v{report.version} · {report.reportStatus === 'final' ? '终稿' : report.reportStatus === 'reviewed' ? '已审核' :
             report.reportStatus === 'returned' ? '待返工' : '草稿'}</small>}</div>
         {completion.error && <Problem error={completion.error} retry={completion.retry} />}
@@ -535,16 +574,6 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           <div className="dy-yx-actions dy-delivery-footer"><button className="dy-yx-primary" disabled={reportBusy}>{reportBusy ? '保存中…' : '确认'}</button></div>
         </form>
       </Modal>}
-      <section className="dy-delivery-card" aria-label="计划议题">
-        <div className="dy-delivery-section dy-plan-title"><h3>计划议题</h3><small>{detail.plan.members.length} 条</small><button disabled={closed || !needsResearch || startingResearch} onClick={startResearch}>{startingResearch ? '正在派发…' : '方案调研'}</button>
-          <button disabled={closed || !questionCount} onClick={() => setAnswering(true)}>批量答疑{questionCount > 0 && '（' + questionCount + '）'}</button></div>
-        {(batch.error || summaryError) && <Problem error={batch.error || summaryError!} retry={batch.retry} />}
-        {startError && <Problem error={startError} retry={startResearch} />}
-        {executionError && <Problem error={executionError} />}
-        {executionUnavailable && <p role="status" className="dy-yx-notice">请更新研发工作台插件并重启 DSH，再开始执行。</p>}
-        <IssueTable openSession={openSession} issues={detail.issues.map(issue => ({ ...issue, sessionId: executionSessions[issue.id] ?? issue.sessionId }))}
-          execute={execute} executing={executing} executionSupported={detail.executionSupported} remove={setRemoving} archive={setArchiving} documents={setDocumentIssue} summaries={summaries}
-          busy={busy} unavailable={!!(summaryError || batch.error)} legacy={legacy} closed={closed} open={setPreviewIssue} finalize={finalize} /></section>
       {previewIssue && researchPlan && <Modal label="方案预览" drawer dismissOnBackdrop busy={false} close={() => setPreviewIssue(undefined)}>
         <header><h2>方案预览</h2><button onClick={() => setPreviewIssue(undefined)}>关闭</button></header>
         <PlanResearch initialIssue={previewIssue} workspaceId={scope.workspaceId} openSession={openSession}

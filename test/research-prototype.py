@@ -7,9 +7,12 @@ def open_issue_workbench(page, with_questions=False, execution=None):
     plan = dict(id="plan", name="交付计划 A", branch="dev", end="2026-11-30", members=[])
     options = dict(projects=[dict(id="project", name="测试项目")],
                    workspaces=[dict(id="w", name="测试工作区")])
-    issues = [dict(id=f"issue-{i}", reference=f"TEST-{i}", title=title, project="project",
-                   owner="", state=dict(id="todo", name="待开发"), url="")
-              for i, title in enumerate(("结算筛选", "附件回退"), start=1)]
+    issues = [
+        dict(id="issue-1", reference="TEST-1", title="结算筛选", project="project",
+             category="Req", owner="", state=dict(id="todo", name="待开发"), url=""),
+        dict(id="issue-2", reference="TEST-2", title="附件回退", project="project",
+             category="Bug", owner="", state=dict(id="doing", name="开发中"), url=""),
+    ]
     plan_row = dict(**scope, plan=plan, projectName="测试项目", workspaceName="测试工作区")
     rows = []
     executions = []
@@ -49,9 +52,10 @@ def open_issue_workbench(page, with_questions=False, execution=None):
                     first["sessionId"] = "example-execution"
         elif method == "planResearch":
             if args.get("start"):
-                questions = [dict(question="如何验收？", recommended="使用推荐方案", alternatives=["补充用例"])] if with_questions else []
+                questions = [dict(question="如何验收？", recommended="使用推荐方案", alternatives=["补充用例"])]
                 rows.extend(dict(issueId=issue["id"], title=issue["title"], sessionId="research-" + issue["id"],
-                                 status="ready", drafts=[dict(markdown="## 初版方案", feedback="", questions=questions)])
+                                 status="ready", drafts=[dict(markdown="## 初版方案", feedback="",
+                                                             questions=questions if with_questions and issue["id"] == "issue-2" else [])])
                             for issue in issues if issue["id"] in plan["members"])
             value = dict(batchId="batch", rows=rows)
         elif method == "researchStatus":
@@ -64,7 +68,7 @@ def open_issue_workbench(page, with_questions=False, execution=None):
                 finalized = row.get("finalizedVersion") == version
                 value.append(dict(issueId=row["issueId"], sessionId=row["sessionId"], version=version, count=count,
                                   canFinalize=not (count or finalized),
-                                  label="已定稿" if finalized else "待答疑" if count else "无待确认事项"))
+                                  label="已定稿" if finalized else f"待答疑 {count} 项" if count else "无待确认事项"))
         elif method in ("researchFinalize", "researchRevise"):
             row = next(row for row in rows if row["sessionId"] == args["sessionId"])
             assert args["version"] == len(row["drafts"])
@@ -132,7 +136,7 @@ def add_marked_to_plan(page):
 
 def check(page):
     execution = dict(supported=False)
-    executions = open_issue_workbench(page, execution=execution)
+    executions = open_issue_workbench(page, with_questions=True, execution=execution)
     expect(page.get_by_role("button", name="双议题调研原型")).to_have_count(0)
     page.get_by_role("button", name="结算筛选", exact=True).click()
     detail = page.get_by_role("region", name="议题详情")
@@ -140,12 +144,21 @@ def check(page):
     expect(page.get_by_role("button", name="直接开工")).to_have_count(0)
     add_marked_to_plan(page)
     desktop = page.get_by_role("region", name="计划议题")
+    expect(desktop.get_by_role("columnheader", name="类型", exact=True)).to_be_visible()
+    issue = desktop.get_by_role("row").filter(has_text="TEST-1")
+    defect = desktop.get_by_role("row").filter(has_text="TEST-2")
+    expect(issue.get_by_text("需求", exact=True)).to_have_attribute("data-tone", "blue")
+    expect(defect.get_by_text("缺陷", exact=True)).to_have_attribute("data-tone", "red")
+    expect(issue.get_by_text("待开发", exact=True)).to_have_attribute("data-tone", "orange")
+    expect(defect.get_by_text("开发中", exact=True)).to_have_attribute("data-tone", "blue")
+    expect(issue.get_by_text("未调研", exact=True)).to_have_attribute("data-tone", "grey")
     expect(desktop.get_by_role("button", name="开始执行")).to_have_count(0)
     desktop.get_by_role("button", name="方案调研").click()
-    issue = desktop.get_by_role("row").filter(has_text="TEST-1")
+    expect(defect.get_by_text("待答疑 1 项", exact=True)).to_have_attribute("data-tone", "orange")
     expect(issue.get_by_role("button", name="查看 v1")).to_be_visible()
     expect(desktop.get_by_role("button", name="开始执行")).to_have_count(0)
     issue.get_by_role("button", name="标记定稿").click()
+    expect(issue.get_by_text("已定稿", exact=True)).to_have_attribute("data-tone", "green")
     expect(issue.get_by_role("button", name="开始执行")).to_be_disabled()
     expect(desktop.get_by_text("请更新研发工作台插件并重启 DSH，再开始执行。")).to_be_visible()
     assert not executions

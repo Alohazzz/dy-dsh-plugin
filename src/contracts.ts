@@ -56,7 +56,7 @@ export type PlanCreate = Pick<Plan, 'name' | 'branch' | 'end' | 'goal'> & {
 export type PlanBranchCheck = { localExists: boolean; remoteExists: boolean }
 export type PlanKey = { project: string; workspaceId: string; planId: string }
 export type PlanRow = PlanKey & { plan: Plan; projectName: string; workspaceName: string; mrStatus?: string }
-export type PlanIssue = Pick<Issue, 'id' | 'reference' | 'title' | 'owner' | 'state' | 'url' | 'sessionId'> & {
+export type PlanIssue = Pick<Issue, 'id' | 'reference' | 'title' | 'owner' | 'state' | 'url' | 'sessionId'> & Partial<Pick<Issue, 'category'>> & {
   error?: string; executionVersion?: number; dispatchedVersion?: number; executionStage?: 'dispatched' | 'ready' | 'confirmed' | 'submitted' }
 export type MrCandidate = { localId: number; title: string; target: string; url: string }
 export type PlanDetails = { plan: Plan; issues: PlanIssue[]; mrStatus?: string; candidates: MrCandidate[]; mrError?: string;

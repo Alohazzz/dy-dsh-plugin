@@ -14,7 +14,8 @@ def check(page):
     actions = []
     binding = dict(key='Nto.His/Term', repositoryId=2, path='org/Term', target='release')
     plans = {
-        'legacy': dict(id='legacy', name='结算导出计划', branch='root-fix', end='2026-11-24', members=['issue1']),
+        'legacy': dict(id='legacy', name='结算导出计划', branch='root-fix', end='2026-11-24', members=['issue1'],
+                       goal='保留当前筛选条件，核对结算导出与页面明细。'),
         'term': dict(id='term', name='术语缓存计划', branch='term-fix', end='2026-11-26', members=[], delivery=binding),
     }
 
@@ -84,8 +85,12 @@ def check(page):
             plan = plans[args['planId']]
             candidates = [dict(localId=5, title='刷新术语缓存', target='release', url='')] if plan['id'] == 'term' and not binding.get('mr') else []
             issues = [dict(id='issue1', reference='HSP-2086', title='结算导出时保留筛选条件',
-                           owner='苏一', state=dict(id='doing', name='开发中'), url='')] if plan['members'] else []
+                           category='Task', owner='苏一', state=dict(id='doing', name='开发中'), url='')] if plan['members'] else []
             value = dict(plan=plan, candidates=candidates, issues=issues, mrStatus=plan_row(plan)['mrStatus'])
+        elif method == 'planResearch':
+            value = dict(batchId='existing-plan-research', rows=[])
+        elif method == 'researchSummaries':
+            value = []
         elif method == 'removeFromPlan':
             assert args == dict(project='project', workspaceId='w', planId='legacy', id='issue1', reason='移入后续计划', defer=False)
             removals.append(args)
@@ -155,6 +160,14 @@ def check(page):
     page.get_by_role('searchbox', name='搜索交付计划').fill('结算')
     page.get_by_role('button', name='结算导出计划').click()
     expect(page.get_by_text('HSP-2086', exact=True)).to_be_visible()
+    overview = page.get_by_text('计划信息', exact=True)
+    goal = page.get_by_text(plans['legacy']['goal'], exact=True)
+    expect(goal).to_be_hidden()
+    overview.press('Enter')
+    expect(goal).to_be_visible()
+    expect(page.get_by_role('group').filter(has=overview).get_by_text('HIS 项目', exact=True)).to_be_visible()
+    overview.press('Enter')
+    expect(goal).to_be_hidden()
     page.get_by_role('button', name='配置交付分支').click()
     drawer = page.get_by_role('dialog', name='配置交付分支')
     drawer.get_by_label('目标分支').select_option('main')
@@ -172,6 +185,17 @@ def check(page):
     page.get_by_role('button', name='返回计划', exact=True).click()
     page.set_viewport_size(dict(width=420, height=680))
     page.emulate_media(color_scheme='dark')
+    issues = page.get_by_role('region', name='计划议题', exact=True)
+    expect(issues.get_by_text('HSP-2086', exact=True)).to_be_in_viewport()
+    task_badge = issues.get_by_text('任务', exact=True)
+    state_badge = issues.get_by_text('开发中', exact=True)
+    expect(task_badge).to_have_attribute('data-tone', 'purple')
+    assert task_badge.evaluate('(badge) => getComputedStyle(badge).color') != state_badge.evaluate('(badge) => getComputedStyle(badge).color')
+    report_link = page.get_by_role('button', name='计划完成报告', exact=True)
+    report_link.press('Enter')
+    report_heading = page.get_by_role('heading', name='计划完成报告', exact=True)
+    expect(report_heading).to_be_focused()
+    expect(report_heading).to_be_in_viewport()
     remove = page.get_by_role('button', name='移出计划 HSP-2086')
     remove.click()
     confirmation = page.get_by_role('dialog', name='调整议题范围', exact=True)

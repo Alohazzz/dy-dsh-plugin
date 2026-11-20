@@ -70,7 +70,7 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
     const path = new URL(url).pathname
     if (path.endsWith('/attachments')) return Response.json([])
     assert.ok(path.endsWith('/workitems/issue'))
-    return Response.json({ id: 'issue', spaceId: 'project', serialNumber: 'TEST-1', description: '原文' })
+    return Response.json({ id: 'issue', spaceId: 'project', serialNumber: 'TEST-1', categoryId: 'Req', description: '原文' })
   })
 
   let endpoint
@@ -110,7 +110,9 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
   assert.equal(prompts.length, 0)
   const finalized = await rpc('researchFinalize', { batchId, sessionId: 'research-1', version: 2 })
   assert.equal(finalized.value.label, '已定稿')
-  assert.equal((await rpc('workbenchPlan', input)).value.executionSupported, true)
+  const plan = (await rpc('workbenchPlan', input)).value
+  assert.equal(plan.executionSupported, true)
+  assert.equal(plan.issues[0].category, 'Req')
   const execution = await rpc('executePlanIssue', input)
   assert.ok(execution.value?.sessionId, execution.error)
   const { sessionId } = execution.value
