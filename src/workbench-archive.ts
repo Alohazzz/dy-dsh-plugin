@@ -344,6 +344,12 @@ async function issueManifestAt(planFolder: string, id: string) {
   if (manifest?.id === id) return { folder, manifest }
 }
 
+export async function planIssueDocuments(scope: ArchiveScope, id: string) {
+  const project = await projectDirectory(scope, false)
+  const folder = project && await namedDirectory(join(project, 'plans'), scope.planId, false)
+  return folder ? (await issueManifestAt(folder, id))?.manifest.documents ?? [] : []
+}
+
 export async function listIssueArchiveDocuments(scope: Omit<ArchiveScope, 'planId'>, id: string) {
   const project = await projectDirectory(scope, false)
   if (!project) return []

@@ -1,6 +1,7 @@
 import type * as ReactType from 'react'
 import type { ResearchRow } from './research-prototype.ts'
 import { legacyQuestions, researchProgress } from './research-questions.ts'
+import { reviewVersion } from './plan-review.ts'
 import type { Rpc } from './mr-panel.tsx'
 
 type Answer = { choice: string; custom: string }
@@ -50,9 +51,9 @@ export function createQuestionReview(React: typeof ReactType, rpc: Rpc) {
     return <section className="dy-question-review" aria-label="集中答疑">
       <h3>待确认事项</h3>
       {groups.map(({ row, version, items, pending }, index) => <section key={row.sessionId} aria-label={row.title}>
-        <header><strong>{row.title}</strong><button onClick={() => preview(index)}>查看方案{version ? ' v' + version : ''}</button></header>
+        <header><strong>{row.title}</strong><button onClick={() => preview(index)}>{version ? reviewVersion(version, row.drafts.at(-1)?.proposalVersion) : '查看调研'}</button></header>
         <p role="status">{row.status === 'failed' ? [researchProgress(row), row.error].filter(Boolean).join(' · ') : pending ? (researchProgress(row) || '正在提交…') :
-          receipts[row.sessionId] && version > receipts[row.sessionId] ? '已更新至 v' + version : ''}</p>
+          receipts[row.sessionId] && version > receipts[row.sessionId] ? '答复已落实到第 ' + version + ' 轮调研' : ''}</p>
         {errors[row.sessionId] && <p role="alert">{errors[row.sessionId]}</p>}
         {version > 0 && !items && <p>旧版草稿未提供可识别的选项，可在方案预览中请原 Agent 整理待确认项。</p>}
         {items?.length === 0 && <p>当前方案没有待确认事项。</p>}

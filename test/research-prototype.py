@@ -2,7 +2,7 @@
 from playwright.sync_api import expect
 
 
-def open_issue_workbench(page, with_questions=False, execution=None):
+def open_issue_workbench(page, with_questions=False, execution=None, all_questions=False):
     scope = dict(project="project", workspaceId="w", planId="plan")
     plan = dict(id="plan", name="交付计划 A", branch="dev", end="2026-11-30", members=[])
     options = dict(projects=[dict(id="project", name="测试项目")],
@@ -45,17 +45,27 @@ def open_issue_workbench(page, with_questions=False, execution=None):
             value = dict(plan=plan, issues=planned, candidates=[])
             if execution and execution["supported"]:
                 value["executionSupported"] = True
+                value["executionStatusSupported"] = True
                 first = next((issue for issue in planned if issue["id"] == "issue-1"), None)
                 if first and len(executions) == 1:
                     first["executionVersion"] = 1
                 if first and len(executions) == 2:
                     first["sessionId"] = "example-execution"
+                    first["dispatchedVersion"] = 1
+                    first["executionStage"] = "dispatched"
+        elif method == "planExecutionStatuses":
+            assert args == dict(**scope, ids=["issue-1"])
+            value = [dict(id="issue-1", sessionId="example-execution", **execution["status"])]
+        elif method == "executionHandoff":
+            assert args == dict(**scope, id="issue-1", sessionId="example-execution")
+            value = dict(markdown="## 与定稿的偏差\n\n已有关系值时显示原值。",
+                         differences="已有关系值时显示原值。", test="## 影响范围与测试\n\n核对已保存的关系值。")
         elif method == "planResearch":
             if args.get("start"):
                 questions = [dict(question="如何验收？", recommended="使用推荐方案", alternatives=["补充用例"])]
-                rows.extend(dict(issueId=issue["id"], title=issue["title"], sessionId="research-" + issue["id"],
+                rows.extend(dict(issueId=issue["id"], reference=issue["reference"], title=issue["title"], sessionId="research-" + issue["id"],
                                  status="ready", drafts=[dict(markdown="## 初版方案", feedback="",
-                                                             questions=questions if with_questions and issue["id"] == "issue-2" else [])])
+                                                             questions=questions if with_questions and (all_questions or issue["id"] == "issue-2") else [])])
                             for issue in issues if issue["id"] in plan["members"])
             value = dict(batchId="batch", rows=rows)
         elif method == "researchStatus":
@@ -78,7 +88,11 @@ def open_issue_workbench(page, with_questions=False, execution=None):
                 value = dict(issueId=row["issueId"], sessionId=row["sessionId"], version=args["version"],
                              canFinalize=False, label="已定稿", count=0)
             else:
-                row["drafts"].append(dict(markdown="## 修订方案\n\n" + args["feedback"], feedback=args["feedback"], questions=[]))
+                proposal = "## 验收与回归\n\n" + args["feedback"]
+                if all_questions and row["issueId"] == "issue-1":
+                    proposal += "\n\n### 组合验收 · TEST-2\n\n筛选后附件仍可查看。"
+                row["drafts"].append(dict(markdown=proposal, proposal=proposal, proposalVersion=1,
+                                          decisions=[args["feedback"]], feedback=args["feedback"], questions=[]))
                 value = row
         elif method == "executePlanIssue":
             assert args == dict(**scope, id="issue-1", version=1)
@@ -135,7 +149,7 @@ def add_marked_to_plan(page):
 
 
 def check(page):
-    execution = dict(supported=False)
+    execution = dict(supported=False, status=dict(stage="queued"))
     executions = open_issue_workbench(page, with_questions=True, execution=execution)
     expect(page.get_by_role("button", name="双议题调研原型")).to_have_count(0)
     page.get_by_role("button", name="结算筛选", exact=True).click()
@@ -155,7 +169,7 @@ def check(page):
     expect(desktop.get_by_role("button", name="开始执行")).to_have_count(0)
     desktop.get_by_role("button", name="方案调研").click()
     expect(defect.get_by_text("待答疑 1 项", exact=True)).to_have_attribute("data-tone", "orange")
-    expect(issue.get_by_role("button", name="查看 v1")).to_be_visible()
+    expect(issue.get_by_role("button", name="第 1 轮调研")).to_be_visible()
     expect(desktop.get_by_role("button", name="开始执行")).to_have_count(0)
     issue.get_by_role("button", name="标记定稿").click()
     expect(issue.get_by_text("已定稿", exact=True)).to_have_attribute("data-tone", "green")
@@ -170,8 +184,28 @@ def check(page):
                               response.request.post_data_json.get("method") == "executePlanIssue"):
         issue.get_by_role("button", name="重试执行 v1").click()
     assert len(executions) == 2
-    entry = page.get_by_role("button", name="研发工作台", exact=True)
-    entry.click()
+    expect(issue.get_by_text("执行排队中")).to_have_attribute("data-active", "true")
+    execution["status"] = dict(stage="running")
+    spinning = issue.get_by_text("执行中", exact=True)
+    expect(spinning).to_have_attribute("data-active", "true")
+    assert spinning.evaluate("(el) => getComputedStyle(el, '::before').animationName") == "dy-task-spin"
+    page.emulate_media(reduced_motion="reduce")
+    assert spinning.evaluate("(el) => getComputedStyle(el, '::before').animationName") == "none"
+    execution["status"] = dict(stage="input", detail="等待操作授权")
+    expect(issue.get_by_text("等待操作授权")).to_be_visible()
+    expect(issue.get_by_text("执行待确认")).to_have_attribute("data-tone", "orange")
+    execution["status"] = dict(stage="failed", detail="执行已中断")
+    expect(issue.get_by_text("执行已中断")).to_be_visible()
+    expect(issue.get_by_text("执行异常")).to_have_attribute("data-tone", "red")
+    execution["status"] = dict(stage="ready")
+    expect(issue.get_by_text("小结待确认")).to_have_attribute("data-tone", "orange")
+    issue.get_by_role("button", name="审阅执行结果").click()
+    handoff = page.get_by_role("dialog", name="审阅执行结果")
+    expect(handoff.get_by_text("已有关系值时显示原值。", exact=True).first).to_be_visible()
+    handoff.get_by_text("测试回写稿", exact=True).click()
+    expect(handoff.get_by_text("核对已保存的关系值。")).to_be_visible()
+    handoff.get_by_role("button", name="关闭").click()
+    expect(defect.get_by_text("小结待确认")).to_have_count(0)
     expect(issue.get_by_role("button", name="查看执行会话")).to_be_visible()
     page.get_by_role("button", name="云效议题", exact=True).click()
     page.get_by_role("button", name="结算筛选", exact=True).click()

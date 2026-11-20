@@ -120,6 +120,37 @@ test('收取缺少草稿标识的回复时，以 DSH 的请求归属为准', asy
   }
 })
 
+test('旧版答疑回包含新问题和草案时，从原请求恢复报告并继续答疑', async t => {
+  const root = await workspace(t)
+  const scope = archiveScope(root, 'org', 'project', 'plan')
+  await savePlanArchive(scope, plan(scope.planId, '答疑恢复'))
+  const directory = join(root, 'research')
+  await mkdir(directory)
+  const sessionId = 'research-answer'
+  const batchId = digest('saved-answer')
+  const questions = [{ question: '清空后如何处理？', recommended: '维持原规则', alternatives: [] }]
+  const feedback = '使用已保存值'
+  const report = markdown('research', feedback)
+  const rejectedDraft = JSON.stringify({ report, questions, decisions: [feedback], proposal: markdown('proposal') })
+  const original = { sessionId, issueId: issue.id, title: issue.title, status: 'failed', phase: 'collecting',
+    error: '调研结果格式无效，请补齐报告、确认决定及可送审方案', rejectedDraft, archive: { scope, issue },
+    work: { requestId: 'answer-2', first: false, issue, cwd: root, feedback },
+    drafts: [{ markdown: markdown('research'), questions: [], feedback: '' }] }
+  await writeFile(join(directory, batchId + '.json'), JSON.stringify([original]))
+  const open = () => createResearch({}, directory, () => assert.fail('恢复回包不需要新会话'))
+  const research = open()
+  await t.waitFor(() => assert.equal(research.status({ batchId })[0].status, 'ready'))
+  const latest = research.status({ batchId })[0].drafts.at(-1)
+  assert.equal(latest.feedback, feedback)
+  assert.deepEqual(latest.decisions, [feedback])
+  assert.deepEqual(latest.questions, questions)
+  assert.equal(latest.markdown, report)
+  assert.equal(latest.proposal, undefined)
+  assert.throws(() => research.submit({ batchId, sessionId, version: 2 }), /送审条件/)
+  assert.equal(open().status({ batchId })[0].drafts.length, 2)
+  assert.deepEqual((await listIssueArchiveDocuments(scope, issue.id)).map(doc => doc.type), ['research'])
+})
+
 test('A 的延迟调研写回原项目，重启可兼容旧材料并重建索引', async t => {
   const root = await workspace(t)
   const a = archiveScope(root, 'org', 'A', 'plan-old')
@@ -157,7 +188,7 @@ test('A 的延迟调研写回原项目，重启可兼容旧材料并重建索引
   }
   research.start(root, [{ id: issue.id, title: issue.title, text: '原文', archive: { scope: a, issue } }], batchId)
   await savePlanArchive(b, plan(b.planId, '另一项目'))
-  answer = { report: markdown('research', '旧回执复用需要确认迁移方式'), proposal: null, decisions: [],
+  answer = { report: markdown('research', '旧回执复用需要确认迁移方式'), proposal: markdown('proposal'), decisions: [],
     questions: [{ question: '采用哪种旧回执兼容方式？', recommended: '兼容读取', alternatives: ['迁移后读取'] }] }
   const first = await settle()
   const text = prompt.content[0].text

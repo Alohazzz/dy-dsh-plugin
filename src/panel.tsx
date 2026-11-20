@@ -805,7 +805,7 @@ window.__ModuleLoader__.load({
         </div>
         <div className="dy-wb-content" hidden={module !== 'issues'}>{visited.issues && <Panel {...props}
           plansRevision={revision} plansChanged={changed} openPlan={openPlan} />}</div>
-        <div className="dy-wb-content" hidden={module !== 'plans'}>{visited.plans && <Plans selected={plan} revision={revision} openSession={id => props.ctx.uiWorkspace.openSession(id)}
+        <div className="dy-wb-content" hidden={module !== 'plans'}>{visited.plans && <Plans selected={plan} revision={revision} active={module === 'plans'} openSession={id => props.ctx.uiWorkspace.openSession(id)}
           openPlan={openPlan} openMr={ref => openMr(ref, 'plan')} changed={changed}
           renderCreate={(scope, meta, close, saved) => <CreatePlanDialog
             scope={scope} meta={meta} selectScope close={close} saved={saved} />} />}</div>

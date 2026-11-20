@@ -110,6 +110,22 @@ export function sectionBody(markdown, title) {
   return output.join('').trim()
 }
 
+export const behaviorHeading = '可观察行为差异'
+
+/** @param {string} testSection @param {string} differences */
+export function includeBehaviorDifferences(testSection, differences) {
+  if (!differences) return testSection
+  let replacing = false
+  const kept = []
+  let found = false
+  for (const token of lexer(testSection)) {
+    if (token.type === 'heading' && token.depth <= 3) replacing = token.depth === 3 && token.text.trim() === behaviorHeading
+    if (replacing) found = true
+    if (!replacing) kept.push(token.raw)
+  }
+  return (found ? kept.join('') : testSection).trimEnd() + '\n\n### ' + behaviorHeading + '\n\n' + differences
+}
+
 /** @param {DocumentType} type @param {string} file @param {Record<string, unknown>} fields @param {string} [markdown] @param {number} [version] */
 export function validatedDocument(type, file, fields, markdown, version = templateVersion) {
   const template = templateFor(type, version)

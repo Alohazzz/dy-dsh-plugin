@@ -1,13 +1,14 @@
 import { writingSkill } from './writing-skill.mjs'
 import { workbenchWritingSkill } from './workbench-documents.mjs'
-import { archiveIndex, archiveScope, assertOpenPlan, listIssueArchiveDocuments, readIssueArchiveDocument, savePlanArchive, searchedArchive } from './workbench-archive.ts'
+import { archiveIndex, archiveScope, assertOpenPlan, listIssueArchiveDocuments, planIssueDocuments, readIssueArchiveDocument, savePlanArchive, searchedArchive } from './workbench-archive.ts'
 import { saveCompletion, workbenchCompletion, type CompletionAction } from './workbench-completion.ts'
 import { researchSkill } from './research-skill.ts'
+import { sharedAcceptance } from './plan-review.ts'
 import { deliveryOptions, git, mrPreview, mrRepos, submitMr, workspaceRepository, type MrInput } from './merge-request.ts'
 import { createMrReviews, reviewSessionPrefix } from './mr-review.ts'
 import { availableMrActions, createMrActions } from './mr-actions.ts'
 import { issueMaterials } from './issue-materials.ts'
-import { createResearch } from './research-prototype.ts'
+import { createResearch, type ReadHistory } from './research-prototype.ts'
 import { existsSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -16,7 +17,7 @@ import { checkPlanBranch, planWorktree } from './plan-git.ts'
 import { createConnectionSettings, type CredentialStore } from './connection-settings.ts'
 import { createHandler, descriptionOf, digest } from './yunxiao.mjs'
 import { createWorkflow, executionSkill, label, projectOf } from './workflow.ts'
-import type { Details, Issue, IssueDocumentKey, IssueDocuments, IssueKey, Meta, MrRef, Option, Plan, PlanCreate, PlanDetails, PlanKey, PlanRow, Search } from './contracts.ts'
+import type { Details, ExecutionStatus, Issue, IssueDocumentKey, IssueDocuments, IssueKey, Meta, MrRef, Option, Plan, PlanCreate, PlanDetails, PlanKey, PlanRow, Search } from './contracts.ts'
 import { createSkillSources } from './skill-sources.ts'
 import { createSkillInstallations, skillProjectRoot } from './skill-installations.ts'
 import { dshSkillTarget, type SkillSourceInput, type SkillTarget } from './skill-catalog.ts'
@@ -54,6 +55,11 @@ type Context = {
     prompt(input: { sessionId: string; requestId: string; mode: 'queue'; content: { type: 'text'; text: string }[] }, signal: AbortSignal): Promise<unknown>
     resolveAgent(id: string): Promise<{ agent?: { session: { append(event: string, payload: object): unknown } } }>
     wait(input: { sessionId: string; timeoutMs: number; maxMessages: number }, signal: AbortSignal): Promise<ReviewWait>
+    state(input: { sessionId: string }, signal: AbortSignal): Promise<{
+      cursor: number; running: boolean; queue: { rpcId?: string }[] | null; pendingInput: string[]
+    }>
+    events?: ReadHistory
+    page?: ReadHistory
   }
   agentPresets: { remoteExportList(): Promise<{ presets: { id: string; name?: string; broken?: string }[] }> }
   permissionPresets: { names: string[]; optionOf(name: string): { label: string }; set(session: unknown, name: string): void }
@@ -335,7 +341,35 @@ export function apply(ctx: Context) {
         return { id, reference: id, title: '', owner: '', state: { id: '', name: '' }, url: '', error: '议题读取失败' }
       }
     }), mrState()])
-    return { plan, issues, ...state, archiveError: archive.error, executionSupported: true }
+    return { plan, issues, ...state, archiveError: archive.error, executionSupported: true, executionStatusSupported: true }
+  }
+
+  async function executionStatus(binding: NonNullable<Awaited<ReturnType<typeof workflow.bindingFor>>>, scope: ReturnType<typeof archiveScope>): Promise<ExecutionStatus> {
+    const stage = workflow.archivedExecutionStage(binding, await planIssueDocuments(scope, binding.id))
+    if (stage !== 'dispatched') return { stage }
+    const { sessionId } = binding
+    const signal = AbortSignal.timeout(5000)
+    const controller = ctx.sessionController
+    const state = await controller.state({ sessionId }, signal)
+    if (state.pendingInput.length) return { stage: 'input', detail: state.pendingInput.includes('approval') ? '等待操作授权' : '等待用户答复' }
+    if (state.queue?.some(item => item.rpcId === binding.requestId)) return { stage: 'queued' }
+    if (state.running) return { stage: 'running' }
+    if (state.queue?.length) return { stage: 'queued' }
+    const read = controller.events ?? controller.page
+    if (!read) return { stage: 'unavailable', detail: '宿主无法读取执行会话记录' }
+    const { records } = await read.call(controller, { address: { kind: 'session', sessionId }, throughSeq: state.cursor,
+      maxMessages: 4, turnWindow: { minTurns: 1, minMessages: 1 } }, signal)
+    const boundary = records.findLast(({ event }) => event.type === 'turn/end' || event.type === 'turn/start')?.event
+    if (!boundary) return { stage: 'unavailable', detail: '尚未取得本轮执行记录' }
+    const reason = boundary.data.reason
+    if (boundary.type !== 'turn/end' || reason?.kind !== 'completed') {
+      const causes: Record<string, string> = { aborted: '执行已取消', interrupted: '执行已中断', blocked: '执行受阻', 'max-tokens': '已达到输出上限' }
+      return { stage: 'failed', detail: reason?.error?.message?.slice(0, 300) || causes[reason?.kind ?? ''] || '执行未正常结束' }
+    }
+    const reply = records.findLast(({ event }) => event.type === 'assistant/message' && event.data.turn === boundary.data.turn)
+    const question = reply?.event.data.message?.content?.find(block => block.type === 'text')?.text?.trim().match(/^待确认[：:]\s*([^\n]+)/u)
+    if (question) return { stage: 'input', detail: question[1].slice(0, 300) }
+    return workflow.executionDraftStatus(binding)
   }
 
   const researchDirectory = join(home, 'research')
@@ -361,6 +395,28 @@ export function apply(ctx: Context) {
   }
 
   const methods = {
+    async executionHandoff(input: PlanKey & { id: string; sessionId: string }) {
+      const api = await settings.client()
+      const plan = await readPlan(api, input)
+      if (!plan.members.includes(input.id)) throw new Error('议题不在当前交付计划中')
+      return workflow.executionHandoff(planDirectory(input), input, api.organization)
+    },
+    async planExecutionStatuses(input: PlanKey & { ids: string[] }) {
+      const api = await settings.client()
+      const plan = await readPlan(api, input)
+      const scope = reportScope(api, input)
+      return inBatches(plan.members.filter(id => input.ids.includes(id)), async id => {
+        let sessionId: string | undefined
+        try {
+          const binding = await workflow.bindingFor(scope.root, { project: input.project, planId: plan.id, id }, api.organization)
+          if (!binding?.dispatched) return { id }
+          sessionId = binding.sessionId
+          return { id, sessionId, ...await executionStatus(binding, scope) }
+        } catch (error) {
+          return { id, sessionId, stage: 'unavailable', detail: error instanceof Error ? error.message : '无法读取执行状态' }
+        }
+      })
+    },
     async planResearch(input: PlanKey & { start?: boolean }) {
       const api = await settings.client()
       const plan = await readPlan(api, input)
@@ -377,7 +433,7 @@ export function apply(ctx: Context) {
         const keywords = [...new Intl.Segmenter('zh', { granularity: 'word' }).segment(item.title)]
           .filter(word => word.isWordLike && word.segment.length > 1).slice(0, 10).map(word => word.segment)
         const hints = await searchedArchive(scope, [id, item.reference, item.product, item.title, ...keywords])
-        return { id, title: item.reference + ' ' + item.title,
+        return { id, title: item.reference + ' ' + item.title, excerpt: item.text.slice(0, 500),
           text: [item.text, item.materialsError,
             '历史档案索引（按当前项目查找，若无相关材料请记录缺口）：' + JSON.stringify(hints)].filter(Boolean).join('\n'),
           archive: { scope, issue: { id, reference: item.reference, title: item.title, module: item.product },
@@ -396,8 +452,10 @@ export function apply(ctx: Context) {
         if (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], true) !== plan.branch) {
           throw new Error('请在计划的代码目录检出源分支「' + plan.branch + '」后再执行')
         }
-        const researchRow = research.status({ batchId: researchBatch(organization, input) }).find(row => row.issueId === input.id)
+        const members = research.status({ batchId: researchBatch(organization, input) }).filter(row => plan.members.includes(row.issueId || ''))
+        const researchRow = members.find(row => row.issueId === input.id)
         return { cwd, version: input.version, approvedProposalVersion: researchRow?.drafts[input.version - 1]?.proposalVersion,
+          sharedAcceptance: sharedAcceptance(members, input.id, true),
           readDraft: () => research.finalizedDraft(researchBatch(organization, input), input.id, input.version) }
       })
       return { sessionId: binding.sessionId }

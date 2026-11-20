@@ -52,6 +52,7 @@ export function researchProgress(row: ResearchRow) {
     queued: '已送达 · 等待执行',
     running: row.drafts.length ? 'Agent 修订中' : 'Agent 调研中',
     collecting: '正在收取草稿',
+    input: '调研待确认',
   }[row.phase || 'dispatching']
 }
 
@@ -65,13 +66,13 @@ export function researchSummary(row: ResearchRow) {
   const canSubmit = Boolean(ready && draft?.report && row.submittedVersion !== version)
   const canFinalize = ready && !canSubmit
   let label = '待核实问题清单'
-  if (row.status === 'running') label = version ? '修订中' : '调研中'
+  if (row.status === 'running') label = row.phase === 'input' ? '调研待确认' : version ? '修订中' : '调研中'
   else if (row.status === 'failed' && !version) label = '调研失败'
   else if (finalized) label = '已定稿'
   else if (canSubmit) label = '待送审'
   else if (canFinalize && row.submittedVersion === version) label = '待审核'
   else if (canFinalize) label = '无待确认事项'
   else if (count) label = '待答疑 ' + count + ' 项'
-  return { issueId: row.issueId, sessionId: row.sessionId, version, label, canFinalize, canSubmit,
-    progress: researchProgress(row), count: row.status !== 'running' ? count : undefined }
+  return { issueId: row.issueId, sessionId: row.sessionId, version, proposalVersion: draft?.proposalVersion, label, canFinalize, canSubmit,
+    progress: researchProgress(row), error: row.error, count: row.status !== 'running' ? count : undefined }
 }

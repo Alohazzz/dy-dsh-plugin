@@ -78,6 +78,9 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
   const permissions = []
   const created = []
   const prompts = []
+  const sessionState = { cursor: 20, running: true, queue: [], pendingInput: [] }
+  const end = { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } }
+  const reply = { type: 'assistant/message', data: { turn: 1, message: { content: [] } } }
   apply({
     get() {}, on() {}, tools: { guard() {} }, commands: { register() {} },
     inject(_names, install) {
@@ -91,6 +94,14 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
       resolveAgent: async sessionId => ({ agent: { session: sessionId } }),
       create: async input => { created.push(input) },
       prompt: async input => { prompts.push(input) },
+      state: async ({ sessionId }) => {
+        assert.equal(sessionId, created[0].sessionId)
+        return sessionState
+      },
+      events: async ({ throughSeq }) => {
+        assert.equal(throughSeq, sessionState.cursor)
+        return { records: [{ event: reply }, { event: end }] }
+      },
     },
   })
   assert.ok(registeredSkills.includes(writingSkill))
@@ -137,6 +148,45 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
   for (const section of templateFor('execution').sections) assert.ok(task.instructions.includes(section))
   assert.equal((await rpc('workbenchPlan', input)).value.issues[0].sessionId, sessionId)
   assert.equal(await readFile(join(cwd, '.dsh', 'yunxiao', digest(sessionId), 'plan.md'), 'utf8'), '# 当前方案')
+  const states = () => rpc('planExecutionStatuses', { ...input, ids: ['other', input.id] }).then(result => {
+    assert.equal(result.value?.length, 1, result.error)
+    assert.equal(result.value[0].sessionId, sessionId)
+    return result.value[0]
+  })
+  sessionState.queue = [{ rpcId: prompts[0].requestId }]
+  assert.equal((await states()).stage, 'queued')
+  sessionState.queue = []
+  await writeFile(task.execution, '')
+  assert.equal((await states()).stage, 'running')
+  sessionState.pendingInput = ['approval']
+  assert.equal((await states()).detail, '等待操作授权')
+  sessionState.pendingInput = []
+  sessionState.running = false
+  assert.equal((await states()).stage, 'failed')
+  await rm(task.execution)
+  assert.match((await states()).detail, /未收到执行小结/)
+  reply.data.message.content = [{ type: 'text', text: '待确认：是否保留历史记录？' }]
+  assert.equal((await states()).stage, 'input')
+  assert.equal((await states()).detail, '是否保留历史记录？')
+  reply.data.message.content = []
+  await writeFile(task.execution, templateFor('execution').sections.map(title => '## ' + title + '\n正文').join('\n\n'))
+  end.data.reason = { kind: 'error', error: { message: '模型连接中断' } }
+  assert.equal((await states()).detail, '模型连接中断')
+  end.data.reason = { kind: 'completed' }
+  assert.equal((await states()).stage, 'ready')
+  const delta = 'A1 · 参数关闭且已有关系值，预期留空，当前显示原值，待验证。'
+  const note = (await readFile(task.execution, 'utf8')).replace('## 与定稿的偏差\n正文',
+    '## 与定稿的偏差\n内部重构\n\n### 可观察行为差异\n' + delta)
+  await writeFile(task.execution, note)
+  await writeFile(task.discussion, '## 影响范围与测试\n保留首诊用例\n\n### 可观察行为差异\n过期场景\n\n### 其他测试\n保留边界用例')
+  const handoff = await rpc('executionHandoff', { ...input, sessionId })
+  assert.equal(handoff.value?.differences, delta, handoff.error)
+  assert.ok(handoff.value.test.includes(delta))
+  assert.match(handoff.value.test, /保留首诊用例[\s\S]*保留边界用例/)
+  assert.doesNotMatch(handoff.value.test, /内部重构|过期场景/)
+  assert.match((await rpc('executionHandoff', { ...input, sessionId: 'unrelated' })).error, /绑定/)
+  assert.ok((await rpc('archivePlanExecution', input)).value?.execution)
+  assert.equal((await states()).stage, 'confirmed')
   assert.ok((await rpc('voidPlan', input)).value?.voidedAt)
   assert.match((await rpc('executePlanIssue', input)).error, /已作废/)
   assert.deepEqual((await rpc('plans', input)).value, [])
@@ -148,12 +198,14 @@ test('调研只在首次创建任务会话，修订复用会话并保留只读�
   const prompts = []
   const events = []
   let researchSkillAvailable = false
+  let needsInput = true
   const research = createResearch({
     prompt: async input => {
       prompts.push(input)
       events.push([input.sessionId, 'prompt'])
     },
     wait: async () => {
+      if (needsInput) return { reason: 'input-required' }
       const { requestId } = prompts.at(-1)
       const text = ['DRAFT-' + requestId, '# 方案', '```json', '[]', '```'].join('\n')
       return { reason: 'idle', output: { records: [{ event: { data: { message: { content: [{ type: 'text', text }] } } } }] } }
@@ -165,6 +217,9 @@ test('调研只在首次创建任务会话，修订复用会话并保留只读�
   const batchId = digest('writing-test')
   const { rows: [{ sessionId }] } = research.start(cwd, [{ id: 'issue', title: '测试议题', text: '议题原文' }], batchId)
   await setImmediate()
+  assert.equal(research.summaries({ batchId })[0].label, '调研待确认')
+  needsInput = false
+  await t.waitFor(() => assert.equal(research.status({ batchId })[0].status, 'ready'), { timeout: 5000 })
   assert.equal(research.status({ batchId })[0].drafts.length, 1)
   researchSkillAvailable = true
   research.revise({ batchId, sessionId, version: 1, feedback: '补充回归条件' })

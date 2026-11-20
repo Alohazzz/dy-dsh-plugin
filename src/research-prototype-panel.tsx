@@ -1,4 +1,5 @@
-import { researchProgress } from './research-questions.ts'
+import { legacyQuestions, researchProgress } from './research-questions.ts'
+import { reviewChanges, reviewVersion, sharedAcceptance } from './plan-review.ts'
 import type * as ReactType from 'react'
 import type { PlanKey } from './contracts.ts'
 import type { ResearchRow } from './research-prototype.ts'
@@ -58,6 +59,9 @@ export function createResearchPrototype(React: typeof ReactType, rpc: Rpc) {
     }, [batchId, plan])
     const row = reviewing ? rows.find(item => item.sessionId === previewSession) : rows[selected]
     const draft = row?.drafts.at(-1)
+    const review = React.useMemo(() => row && draft && reviewChanges(row), [row, draft])
+    const shared = React.useMemo(() => row?.issueId ? sharedAcceptance(rows, row.issueId) : [], [rows, row])
+    const questions = draft && (draft.questions ?? legacyQuestions(draft.markdown))
     const feedbackText = row ? notes[row.sessionId] ?? row.failedFeedback ?? '' : ''
     async function send() {
       if (!row) return
@@ -81,21 +85,32 @@ export function createResearchPrototype(React: typeof ReactType, rpc: Rpc) {
         {reviewing && <button onClick={() => setPreviewSession(undefined)}>收起预览</button>}
         <h3>{row.title}</h3>
         <div className="dy-yx-actions"><button onClick={() => openSession(row.sessionId)}>查看会话</button>
-          <span role="status">{sending === row.sessionId ? '正在提交意见…' : researchProgress(row) || (draft && '草稿 v' + row.drafts.length + ' 已就绪')}</span></div>
+          <span role="status">{sending === row.sessionId ? '正在提交意见…' : researchProgress(row)}</span></div>
         {row.error && <p role="alert">{draft ? (researchProgress(row) === '未送达' ? '修订意见未送达。' : '修订失败。') : ''}{row.error.includes('already owned by an active write handle') ? '原会话正被另一个 DSH 工作台占用，请释放该会话后重试。' : row.error}</p>}
-        {draft && <><h3>{draft.report && !draft.proposal ? '调研报告' : '方案预览'} v{row.drafts.length}</h3>
-          {draft.feedback && <p>本轮意见 · {draft.feedback}</p>}
-          <Markdown text={draft.markdown} />
+        {draft && review && <><h3>{reviewVersion(row.drafts.length, draft.proposalVersion)}</h3>
+          {questions?.length ? <><h4>本轮待确认</h4><ul>{questions.map((q, i) => <li key={i}>{q.question}</li>)}</ul></> :
+            questions && <p>{draft.proposal && row.finalizedVersion !== row.drafts.length ? '待确认问题已答完，可审阅执行方案。' : '本轮无待确认问题。'}</p>}
+          {review.decisions.length > 0 && <><h4>本轮落实的决定</h4><ul>{review.decisions.map((text, i) => <li key={i}>{text}</li>)}</ul></>}
+          {draft.feedback && <details><summary>查看本轮收到的意见</summary><p>{draft.feedback}</p></details>}
+          {draft.proposal && !review.previous && <p>本轮首次形成执行方案。</p>}
+          {review.changes.length > 0 && <><h4>与上一版相比</h4>{review.changes.map(change => <details key={change.name}>
+            <summary>{change.name} · {change.before === undefined ? '新增' : change.after === undefined ? '删除' : '修订'}</summary>
+            {change.after !== undefined && <><h4>本版原文</h4><Markdown text={change.after} /></>}
+            {change.before !== undefined && <><h4>上一版原文</h4><Markdown text={change.before} /></>}
+          </details>)}</>}
+          {shared.length > 0 && <><h4>关联议题的组合验收</h4>{shared.map((item, i) => <details key={i}><summary>
+            {item.source} 与 {item.related} · {item.version} · {item.approved ? '已定稿' : '草稿'}</summary><Markdown text={item.body} /></details>)}</>}
+          <details open key={row.sessionId + row.drafts.length}><summary>查看{draft.proposal ? '执行方案' : draft.report ? '调研报告' : '草稿'}全文</summary><Markdown text={draft.markdown} /></details>
           {draft.report && draft.proposal && <details><summary>查看对应调研报告</summary><Markdown text={draft.report} /></details>}
           {row.reviews?.length ? <details><summary>审核记录</summary><ul>{row.reviews.map((review, index) =>
-            <li key={index}>v{review.version} · {{ submitted: '送审', returned: '退回', approved: '批准' }[review.result]} · {review.actor} · {new Date(review.time).toLocaleString()}{review.note && ' · ' + review.note}</li>)}</ul></details> : null}
-          {row.drafts.length > 1 && <details key={row.sessionId}><summary>查看上一版 · v{row.drafts.length - 1}</summary><Markdown text={row.drafts[row.drafts.length - 2].markdown} /></details>}
+            <li key={index}>{reviewVersion(review.version, review.proposalVersion)} · {{ submitted: '送审', returned: '退回', approved: '批准' }[review.result]} · {review.actor} · {new Date(review.time).toLocaleString()}{review.note && ' · ' + review.note}</li>)}</ul></details> : null}
+          {review.previous && <details><summary>上一版同类文档全文</summary><Markdown text={(draft.proposal ? review.previous.proposal : draft.report ? review.previous.report : review.previous.markdown)!} /></details>}
           <div className="dy-research-feedback">
             <label>给原 Agent 的修改意见<textarea rows={4} maxLength={8000} value={feedbackText} disabled={sending === row.sessionId}
               onChange={e => setNotes({ ...notes, [row.sessionId]: e.target.value })}/></label>
             <div role="status" aria-live="polite">{sending === row.sessionId ? '正在发送意见…' :
               row.status === 'running' ? researchProgress(row) :
-              row.status === 'failed' ? '可检查意见后重新发送。' : draft.feedback ? '修订完成，已更新至 v' + row.drafts.length : ''}</div>
+              row.status === 'failed' ? '可检查意见后重新发送。' : draft.feedback ? '本轮修订已完成' : ''}</div>
             {row.status === 'running' && submitted[row.sessionId] && <small>{submitted[row.sessionId]}</small>}
             {error && <p role="alert">{error}</p>}
             <button className="dy-yx-primary" disabled={busy || row.status === 'running' || !feedbackText.trim()} onClick={send}>发送并修订</button>

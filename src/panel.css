@@ -86,7 +86,7 @@
 .dy-delivery-branches code {
   padding: .1rem .3rem; border-radius: .25rem; background: var(--yx-selected); overflow-wrap: anywhere;
 }
-.dy-yx .dy-plan-header { display: grid; grid-template-columns: minmax(0, 1fr); gap: .35rem; align-items: start; }
+.dy-yx .dy-plan-header { display: grid; grid-template-columns: minmax(0, 1fr); gap: .45rem; align-items: start; }
 .dy-plan-header .dy-plan-toolbar .dy-delivery-link { margin: 0; }
 .dy-plan-detail .dy-plan-toolbar { justify-content: space-between; }
 .dy-plan-title { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .7rem; min-width: 0; }
@@ -95,11 +95,57 @@
 .dy-plan-meta > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .4rem; min-width: 0; }
 .dy-plan-meta dt { color: var(--yx-muted); }
 .dy-plan-meta dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.dy-plan-title > .dy-plan-meta { font-variant-numeric: tabular-nums; }
+.dy-plan-branches .dy-plan-title { flex: 1 1 28rem; }
+.dy-plan-branches code {
+  padding: .12em .4em; border-radius: .25rem; background: var(--yx-raised); box-decoration-break: clone;
+}
+.dy-plan-detail .dy-plan-toolbar button:not(.dy-delivery-link) { padding-block: .25rem; }
 .dy-yx .dy-plan-info > summary {
   width: fit-content; padding: .15rem .35rem; border: 0; color: var(--yx-muted);
 }
 .dy-plan-info > p { margin: .35rem 0; overflow-wrap: anywhere; }
 .dy-plan-info > .dy-plan-meta { margin-block: .35rem; }
+.dy-plan-detail .dy-yx-status {
+  font-size: .75rem; font-weight: 500; line-height: 1.5; padding: .06rem .35rem; border-radius: .25rem;
+  box-sizing: border-box; max-inline-size: 100%; word-break: keep-all; overflow-wrap: anywhere;
+}
+.dy-plan-issues-table { border-radius: 0 0 .55rem .55rem; }
+.dy-plan-issues-table table { table-layout: fixed; min-width: 62rem; }
+.dy-plan-issues-table :is(th, td) { padding: .65rem .75rem; }
+.dy-plan-issues-table th { box-sizing: border-box; padding-block: .55rem; font-size: .8rem; font-weight: 600; }
+.dy-plan-issues-table th:nth-child(1) { width: 7.4rem; }
+.dy-plan-issues-table th:nth-child(2) { width: 4.25rem; }
+.dy-plan-issues-table th:nth-child(4) { width: 5rem; }
+.dy-plan-issues-table th:nth-child(5) { width: 6.25rem; }
+.dy-plan-issues-table th:nth-child(6) { width: 10rem; }
+.dy-plan-issues-table th:nth-child(7) { width: 27%; }
+.dy-plan-issues-table td { overflow-wrap: anywhere; }
+.dy-plan-issues-table td:first-child { font-size: .85rem; font-variant-numeric: tabular-nums; }
+.dy-plan-issues-table td:first-child a:not(:hover) { text-decoration: none; }
+.dy-plan-issues-table td:nth-child(4) { color: var(--yx-muted); }
+.dy-plan-issues-table tbody tr:hover {
+  background: var(--dsw-alias-interactive-bg-hover, color-mix(in srgb, var(--yx-raised) 55%, transparent));
+}
+.dy-plan-issue-statuses, .dy-plan-issue-actions { display: flex; flex-wrap: wrap; align-items: center; }
+.dy-plan-issue-statuses { gap: .25rem .35rem; }
+.dy-plan-issue-statuses > small { flex-basis: 100%; overflow-wrap: anywhere; }
+.dy-plan-issue-statuses [data-active]::before {
+  content: ''; display: inline-block; width: .55em; height: .55em; margin-inline-end: .4em;
+  border: .14em solid currentColor; border-inline-end-color: transparent; border-radius: 50%;
+  animation: dy-task-spin 1s linear infinite;
+}
+@keyframes dy-task-spin { to { transform: rotate(1turn); } }
+@media (prefers-reduced-motion: reduce) {
+  .dy-plan-issue-statuses [data-active]::before { animation: none; }
+}
+.dy-plan-issue-actions { gap: .2rem .45rem; }
+.dy-yx .dy-plan-issue-actions button { font-size: .8rem; padding: .15rem .35rem; }
+.dy-yx .dy-plan-issue-actions button.dy-delivery-link { border-radius: .25rem; }
+.dy-yx .dy-plan-issue-actions button.dy-delivery-link:not(:first-child, :hover, :focus-visible) { color: var(--yx-muted); }
+.dy-yx .dy-plan-issue-actions button.dy-plan-issue-remove:is(:hover, :focus-visible) {
+  color: var(--dsw-alias-state-error-primary, light-dark(#983019, #feb39d));
+}
 .dy-delivery-table td.dy-delivery-issue-empty { padding-block: 1.6rem; text-align: center; color: var(--yx-muted); }
 .dy-delivery-tabs { padding: .35rem .9rem; border-bottom: 1px solid var(--yx-edge); }
 .dy-delivery-tabs [aria-current] { background: var(--yx-selected); border-color: currentColor; }
@@ -468,5 +514,3 @@ main.dy-yx > * { flex-shrink: 0; }
 @media (min-width: 761px) {
   .dy-research-preview { position: sticky; top: 0; max-height: 75vh; overflow: auto; }
 }
-
-.dy-plan-issue-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem .85rem; }

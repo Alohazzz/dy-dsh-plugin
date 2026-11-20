@@ -1,4 +1,5 @@
 import { researchSummary } from './research-questions.ts'
+import { reviewVersion } from './plan-review.ts'
 import type { ResearchSummary, ResearchRow } from './research-prototype.ts'
 import type * as ReactType from 'react'
 import DOMPurify from 'dompurify'
@@ -6,7 +7,7 @@ import { marked } from 'marked'
 import { mrReviewCommentLimit, type Meta, type MrRef, type MrReviewComment, type MrReviewView, type Plan,
   type MrAction, type MrActionPreview, type MrActionResult, type MrMergeType,
   type IssueDocument, type IssueDocumentBody, type IssueDocuments as IssueDocumentList, type IssueKey,
-  type PlanDetails, type PlanIssue, type PlanKey, type PlanRow } from './contracts.ts'
+  type ExecutionStatus, type PlanDetails, type PlanIssue, type PlanKey, type PlanRow } from './contracts.ts'
 import type { codeupApi } from './codeup.mjs'
 import type { deliveryOptions, mrRepos } from './merge-request.ts'
 import type { CompletionAction, workbenchCompletion } from './workbench-completion.ts'
@@ -29,11 +30,16 @@ const mrActionReceipts: Record<MrAction, string> = { approve: '评审已通过',
 const proposalStatusTones: ReadonlyMap<string, BadgeTone> = new Map([
   ['调研中', 'blue'], ['修订中', 'blue'], ['Agent 调研中', 'blue'], ['Agent 修订中', 'blue'],
   ['正在派发', 'blue'], ['已送达 · 等待执行', 'blue'], ['正在收取草稿', 'blue'], ['已派发', 'blue'],
-  ['待核实问题清单', 'orange'], ['待送审', 'orange'], ['待审核', 'orange'], ['小结待确认', 'orange'],
+  ['待核实问题清单', 'orange'], ['调研待确认', 'orange'], ['待送审', 'orange'], ['待审核', 'orange'], ['小结待确认', 'orange'],
   ['无待确认事项', 'green'], ['已定稿', 'green'], ['小结已确认', 'green'], ['已登记提交', 'green'],
   ['未送达', 'red'], ['调研失败', 'red'], ['修订失败', 'red'], ['状态不可用', 'red'],
 ])
 const proposalStatusTone = (label: string): BadgeTone => label.startsWith('待答疑') ? 'orange' : proposalStatusTones.get(label) ?? 'grey'
+const executionBadges: Record<ExecutionStatus['stage'], [string, BadgeTone]> = {
+  dispatched: ['已派发', 'grey'], queued: ['执行排队中', 'blue'], running: ['执行中', 'blue'],
+  input: ['执行待确认', 'orange'], failed: ['执行异常', 'red'], unavailable: ['执行状态未知', 'grey'],
+  ready: ['小结待确认', 'orange'], confirmed: ['小结已确认', 'green'], submitted: ['已登记提交', 'green'],
+}
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
 const renderReport = (markdown: string) => DOMPurify.sanitize(marked.parse(markdown, { async: false }), {
   ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'strong', 'em', 'ul', 'ol', 'li', 'code', 'pre', 'blockquote',
@@ -68,9 +74,9 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     return { ...(result?.key === key ? result : undefined), retry: () => retry(value => value + 1) }
   }
 
-  function Status({ label, tone }: { label: string; tone?: BadgeTone }) {
+  function Status({ label, tone, animated }: { label: string; tone?: BadgeTone; animated?: boolean }) {
     const color = tone ?? (label.includes('已合并') ? 'green' : label === '待审核' || label === '待合并' ? 'orange' : 'grey')
-    return <span className="dy-yx-status" data-tone={color}>{label}</span>
+    return <span className="dy-yx-status" data-tone={color} data-active={animated || undefined}>{label}</span>
   }
   function Branches({ source, target }: { source: string; target?: string }) {
     return <span className="dy-delivery-branches"><code>{source || '—'}</code>
@@ -79,8 +85,8 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
   function Problem({ error, retry }: { error: string; retry?(): void }) {
     return <p className="dy-yx-error" role="alert">{error} {retry && <button type="button" onClick={retry}>重试</button>}</p>
   }
-  function Table({ headers, children }: { headers: string[]; children: ReactType.ReactNode }) {
-    return <div className="dy-delivery-table" tabIndex={0}><table>
+  function Table({ headers, children, className }: { headers: string[]; children: ReactType.ReactNode; className?: string }) {
+    return <div className={className ? 'dy-delivery-table ' + className : 'dy-delivery-table'} tabIndex={0}><table>
       <thead><tr>{headers.map(label => <th key={label} scope="col" className={label === '议题数' ? 'dy-delivery-number' : undefined}>{label}</th>)}</tr></thead>
       <tbody>{children}</tbody>
     </table></div>
@@ -252,44 +258,54 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </Modal>
   }
 
-  function IssueTable({ issues, remove, archive, documents, summaries, open, finalize, execute, executing, executionSupported, busy, unavailable, legacy, closed, openSession }: {
+  function IssueTable({ issues, remove, archive, handoff, documents, summaries, open, finalize, execute, executing, executionSupported, live, dispatchErrors, busy, unavailable, legacy, closed, openSession }: {
     issues: PlanIssue[]; remove(issue: PlanIssue): void; summaries?: ResearchSummary[]; open(id: string): void
-    archive(issue: PlanIssue): void; documents(issue: PlanIssue): void
+    archive(issue: PlanIssue): void; handoff(issue: PlanIssue): void; documents(issue: PlanIssue): void
+    live: Record<string, ExecutionStatus>; dispatchErrors: Record<string, string>
     finalize(row: ResearchSummary): void; execute(id: string, version: number): void; executing?: string; executionSupported?: boolean
     busy: boolean; unavailable: boolean; legacy: boolean; closed: boolean; openSession(id: string): void
   }) {
-    return <Table headers={['议题编号', '类型', '标题', '负责人', '云效状态', '方案状态', '操作']}>
+    return <Table className="dy-plan-issues-table" headers={['议题编号', '类型', '标题', '负责人', '云效状态', '任务状态', '操作']}>
       {issues.map(issue => {
         const row = summaries?.find(s => s.issueId === issue.id)
         const executionVersion = issue.executionVersion ?? (row?.label === '已定稿' ? row.version : undefined)
         const category = issueCategory(issue.category || '')
         const proposalStatus = summaries ? row?.label || '未调研' : unavailable ? '状态不可用' : '读取中…'
-        const executionStatus = issue.executionStage && {
-          dispatched: '已派发', ready: '小结待确认', confirmed: '小结已确认', submitted: '已登记提交',
-        }[issue.executionStage]
+        const liveStatus = issue.sessionId ? live[issue.sessionId] : undefined
+        const stage = issue.executionStage === 'submitted' || issue.executionStage === 'confirmed'
+          ? issue.executionStage : liveStatus?.stage ?? issue.executionStage
+        const badge = stage && executionBadges[stage]
         return <tr key={issue.id}><td>{issue.url ? <a href={issue.url} target="_blank" rel="noreferrer">{issue.reference}</a> : issue.reference}</td>
         <td>{issue.category ? <Status label={category?.label || issue.category} tone={category?.tone ?? 'grey'} /> : '—'}</td>
         <td>{issue.error || issue.title || '—'}</td><td>{issue.owner || '—'}</td>
         <td>{issue.state.name ? <Status label={issue.state.name} tone={issueStatusTone(issue.state.name)} /> : '—'}</td>
-        <td><div className="dy-plan-issue-actions">
+        <td><div className="dy-plan-issue-statuses">
           <Status label={proposalStatus} tone={proposalStatusTone(proposalStatus)} />
-          {row?.progress && row.progress !== row.label && <Status label={row.progress} tone={proposalStatusTone(row.progress)} />}
-          {summaries && executionStatus && <Status label={executionStatus} tone={proposalStatusTone(executionStatus)} />}
+          {row?.progress && row.progress !== row.label && <Status label={row.progress} tone={proposalStatusTone(row.progress)}
+            animated={['正在派发', '已送达 · 等待执行', 'Agent 调研中', 'Agent 修订中', '正在收取草稿'].includes(row.progress)} />}
+          {executing === issue.id && <Status label="正在派发执行" tone="blue" animated />}
+          {issue.executionVersion && !issue.sessionId && executing !== issue.id && <Status label="派发待重试" tone="orange" />}
+          {badge && <Status label={badge[0]} tone={badge[1]} animated={stage === 'queued' || stage === 'running'} />}
+          {liveStatus?.detail && stage === liveStatus.stage && <small>{liveStatus.detail}</small>}
+          {row?.error && <small className="dy-yx-error">{row.error}</small>}
+          {dispatchErrors[issue.id] && <small className="dy-yx-error" role="alert">{dispatchErrors[issue.id]}</small>}
         </div></td>
         <td><div className="dy-plan-issue-actions">
           <button type="button" className="dy-delivery-link" onClick={() => documents(issue)}>过程文档</button>
           {row && (row.version > 0 || row.label === '调研失败') && <button className="dy-delivery-link" onClick={() => open(issue.id)}>
-            {row.version ? '查看 v' + row.version : '查看失败原因'}</button>}
+            {row.version ? reviewVersion(row.version, row.proposalVersion) : '查看失败原因'}</button>}
           {row && <button className="dy-delivery-link" onClick={() => openSession(row.sessionId)}>查看调研会话</button>}
           {!closed && row?.canSubmit && <button disabled={busy} onClick={() => finalize(row)}>提交审核</button>}
           {!closed && row?.canFinalize && <button title={legacy ? '请在新版 DSH 工作台定稿' : undefined} disabled={busy || legacy} onClick={() => finalize(row)}>标记定稿</button>}
           {issue.sessionId && <button className="dy-delivery-link" onClick={() => openSession(issue.sessionId!)}>查看执行会话</button>}
+          {issue.sessionId && (stage === 'ready' || stage === 'confirmed' || stage === 'submitted') &&
+            <button className="dy-delivery-link" onClick={() => handoff(issue)}>审阅执行结果</button>}
           {issue.sessionId && <button className="dy-delivery-link" onClick={() => archive(issue)}>归档执行成果</button>}
           {!closed && executionVersion !== undefined && (!issue.sessionId || issue.dispatchedVersion !== executionVersion) && <button className="dy-yx-primary" disabled={busy || !executionSupported || Boolean(executing)}
               onClick={() => execute(issue.id, executionVersion)}>
               {executing === issue.id ? '正在派发…' : issue.executionVersion ? '重试执行 v' + issue.executionVersion : '开始执行'}
             </button>}
-          {!closed && <button type="button" className="dy-delivery-link" aria-label={'移出计划 ' + issue.reference}
+          {!closed && <button type="button" className="dy-delivery-link dy-plan-issue-remove" aria-label={'移出计划 ' + issue.reference}
             onClick={() => remove(issue)}>移出计划</button>}</div></td></tr>})}
       {!issues.length && <tr><td colSpan={7} className="dy-delivery-issue-empty">暂无计划议题</td></tr>}
     </Table>
@@ -357,18 +373,21 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </Modal>
   }
 
-  function PlanDetail({ scope, meta, revision, back, openMr, changed, openSession }: {
-    scope: PlanKey; meta?: Meta; revision: number; back(): void; openSession(id: string): void; openMr(ref: MrRef): void; changed(): void
+  function PlanDetail({ scope, meta, revision, active, back, openMr, changed, openSession }: {
+    scope: PlanKey; meta?: Meta; revision: number; active: boolean; back(): void; openSession(id: string): void; openMr(ref: MrRef): void; changed(): void
   }) {
     const result = useRead<PlanDetails>('workbenchPlan', scope, revision)
     const [modal, setModal] = useState<'configure' | 'link' | 'create'>()
     const [busy, setBusy] = useState(false)
     const [notice, setNotice] = useState('')
     const [executing, setExecuting] = useState<string>()
-    const [executionError, setExecutionError] = useState('')
-    const [executionSessions, setExecutionSessions] = useState<Record<string, string>>({})
+    const [dispatchErrors, setDispatchErrors] = useState<Record<string, string>>({})
+    const [live, setLive] = useState<Record<string, ExecutionStatus>>({})
     const [removing, setRemoving] = useState<PlanIssue>()
     const [archiving, setArchiving] = useState<PlanIssue>()
+    const [handoffIssue, setHandoffIssue] = useState<PlanIssue>()
+    const handoff = useRead<{ markdown: string; test: string; testError?: string; differences: string }>('executionHandoff',
+      handoffIssue && { ...scope, id: handoffIssue.id, sessionId: handoffIssue.sessionId })
     const detail = result.value
     const completion = useRead<Awaited<ReturnType<typeof workbenchCompletion>>>('planCompletion', detail?.plan.delivery?.mr ? scope : undefined, revision)
     const report = completion.value?.latest
@@ -376,6 +395,33 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const reportMarkdown = completion.value?.markdown
     const reportHtml = useMemo(() => reportMarkdown && renderReport(reportMarkdown), [reportMarkdown])
     const closed = report?.reportStatus === 'final'
+    const tracked = JSON.stringify(detail?.issues.filter(issue => issue.sessionId &&
+      issue.executionStage !== 'confirmed' && issue.executionStage !== 'submitted').map(issue => [issue.id, issue.sessionId]) ?? [])
+    useEffect(() => {
+      if (!active || closed || !detail?.executionStatusSupported || tracked === '[]') return
+      const targets: [string, string][] = JSON.parse(tracked)
+      const abort = new AbortController()
+      let timer: ReturnType<typeof setTimeout>
+      async function poll() {
+        try {
+          const rows = await rpc<(ExecutionStatus & { id: string; sessionId?: string })[]>('planExecutionStatuses',
+            { ...scope, ids: targets.map(([id]) => id) }, abort.signal)
+          if (abort.signal.aborted) return
+          const statuses = Object.fromEntries<ExecutionStatus>(targets.map(([id, session]) => [session,
+            rows.find(row => row.id === id && (row.sessionId === session || (!row.sessionId && row.stage === 'unavailable'))) ??
+              { stage: 'unavailable', detail: '执行绑定已变化，请刷新计划' }]))
+          setLive(statuses)
+          if (rows.length === targets.length && targets.every(([, session]) =>
+            ['confirmed', 'submitted'].includes(statuses[session].stage))) return
+        } catch (error) {
+          if (abort.signal.aborted) return
+          setLive(Object.fromEntries(targets.map(([, session]) => [session, { stage: 'unavailable', detail: errorText(error) }])))
+        }
+        timer = setTimeout(poll, 2000)
+      }
+      void poll()
+      return () => { abort.abort(); clearTimeout(timer) }
+    }, [scope, active, closed, detail?.executionStatusSupported, tracked])
     const reportHeading = useRef<HTMLHeadingElement>(null)
     const [reportAction, setReportAction] = useState<CompletionAction>()
     const [reportNote, setReportNote] = useState('')
@@ -452,14 +498,12 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     async function execute(id: string, version: number) {
       if (executing) return
       setExecuting(id)
-      setExecutionError('')
+      setDispatchErrors(previous => ({ ...previous, [id]: '' }))
       try {
-        const { sessionId } = await rpc<{ sessionId: string }>('executePlanIssue', { ...scope, id, version })
-        setExecutionSessions(previous => ({ ...previous, [id]: sessionId }))
+        await rpc('executePlanIssue', { ...scope, id, version })
         changed()
-        openSession(sessionId)
       } catch (error) {
-        setExecutionError(errorText(error))
+        setDispatchErrors(previous => ({ ...previous, [id]: errorText(error) }))
         result.retry()
       } finally {
         setExecuting(undefined)
@@ -513,7 +557,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       }} />}
       {!detail && !result.error && <p role="status">正在读取交付计划…</p>}
       {notice && <p role="status" className="dy-yx-notice">{notice}</p>}
-      {detail && <><section className="dy-delivery-card dy-delivery-section" aria-label="交付分支">
+      {detail && <><section className="dy-delivery-card dy-delivery-section dy-plan-branches" aria-label="交付分支">
         <div className="dy-yx-actions dy-plan-toolbar">
           <div className="dy-plan-title">
             <h3>交付分支</h3>
@@ -533,14 +577,20 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
         {detail.mrError && <Problem error={detail.mrError} retry={result.retry} />}
       </section>
       <section className="dy-delivery-card" aria-label="计划议题">
-        <div className="dy-delivery-section dy-plan-title"><h3>计划议题</h3><small>{detail.plan.members.length} 条</small><button disabled={closed || !needsResearch || startingResearch} onClick={startResearch}>{startingResearch ? '正在派发…' : '方案调研'}</button>
-          <button disabled={closed || !questionCount} onClick={() => setAnswering(true)}>批量答疑{questionCount > 0 && '（' + questionCount + '）'}</button></div>
+        <div className="dy-delivery-section dy-yx-actions dy-plan-toolbar">
+          <div className="dy-plan-title"><h3>计划议题</h3><small>{detail.plan.members.length} 条</small></div>
+          <div className="dy-yx-actions">
+            <button disabled={closed || !needsResearch || startingResearch} onClick={startResearch}>{startingResearch ? '正在派发…' : '方案调研'}</button>
+            <button disabled={closed || !questionCount} onClick={() => setAnswering(true)}>批量答疑{questionCount > 0 && '（' + questionCount + '）'}</button>
+          </div>
+        </div>
         {(batch.error || summaryError) && <Problem error={batch.error || summaryError!} retry={batch.retry} />}
         {startError && <Problem error={startError} retry={startResearch} />}
-        {executionError && <Problem error={executionError} />}
         {executionUnavailable && <p role="status" className="dy-yx-notice">请更新研发工作台插件并重启 DSH，再开始执行。</p>}
-        <IssueTable openSession={openSession} issues={detail.issues.map(issue => ({ ...issue, sessionId: executionSessions[issue.id] ?? issue.sessionId }))}
-          execute={execute} executing={executing} executionSupported={detail.executionSupported} remove={setRemoving} archive={setArchiving} documents={setDocumentIssue} summaries={summaries}
+        <IssueTable openSession={openSession} issues={detail.issues.map(issue =>
+          detail.executionStatusSupported && issue.executionStage === 'ready' ? { ...issue, executionStage: 'dispatched' } : issue)}
+          live={live} dispatchErrors={dispatchErrors}
+          execute={execute} executing={executing} executionSupported={detail.executionSupported} remove={setRemoving} archive={setArchiving} handoff={setHandoffIssue} documents={setDocumentIssue} summaries={summaries}
           busy={busy} unavailable={!!(summaryError || batch.error)} legacy={legacy} closed={closed} open={setPreviewIssue} finalize={finalize} /></section>
       {detail.plan.delivery?.mr && <section className="dy-delivery-card dy-delivery-section" aria-label="计划完成报告">
         <div className="dy-yx-actions dy-plan-toolbar"><h3 ref={reportHeading} tabIndex={-1}>计划完成报告</h3>
@@ -578,6 +628,14 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
         <header><h2>方案预览</h2><button onClick={() => setPreviewIssue(undefined)}>关闭</button></header>
         <PlanResearch initialIssue={previewIssue} workspaceId={scope.workspaceId} openSession={openSession}
           plan={researchPlan} close={() => setPreviewIssue(undefined)} />
+      </Modal>}
+      {handoffIssue && <Modal label="审阅执行结果" drawer busy={false} dismissOnBackdrop close={() => setHandoffIssue(undefined)}>
+        <header><h2>{handoffIssue.reference} · 执行结果</h2><button onClick={() => setHandoffIssue(undefined)}>关闭</button></header>
+        {handoff.error ? <Problem error={handoff.error} retry={handoff.retry} /> : !handoff.value ? <p role="status">正在读取执行结果…</p> :
+          <>{handoff.value.differences && <><h3>可观察行为差异</h3><article className="dy-sk-markdown" dangerouslySetInnerHTML={{ __html: renderReport(handoff.value.differences) }} /></>}
+            {handoff.value.markdown && <details open={!handoff.value.differences}><summary>执行小结</summary><article className="dy-sk-markdown" dangerouslySetInnerHTML={{ __html: renderReport(handoff.value.markdown) }} /></details>}
+            {handoff.value.testError && <Problem error={handoff.value.testError} retry={handoff.retry} />}
+            {handoff.value.test && <details open={!handoff.value.markdown}><summary>测试回写稿</summary><article className="dy-sk-markdown" dangerouslySetInnerHTML={{ __html: renderReport(handoff.value.test) }} /></details>}</>}
       </Modal>}
       {documentIssue && <IssueDocuments project={scope.project} id={documentIssue.id} reference={documentIssue.reference}
         title={documentIssue.title} close={() => setDocumentIssue(undefined)} />}
@@ -627,8 +685,8 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </Modal>
   }
 
-  function Plans({ selected, revision, openPlan, openMr, changed, renderCreate, openSession }: {
-    selected?: PlanKey; revision: number; openSession(id: string): void; openPlan(plan?: PlanKey): void; openMr(ref: MrRef): void; changed(): void
+  function Plans({ selected, revision, active, openPlan, openMr, changed, renderCreate, openSession }: {
+    selected?: PlanKey; revision: number; active: boolean; openSession(id: string): void; openPlan(plan?: PlanKey): void; openMr(ref: MrRef): void; changed(): void
     renderCreate(scope: Scope, meta: Meta, close: () => void, saved: (plan?: Plan, scope?: Scope) => void): ReactType.ReactNode
   }) {
     const meta = useRead<Meta>('meta', {}, revision)
@@ -646,7 +704,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       row.plan.name, row.plan.branch, row.plan.delivery?.path, row.plan.delivery?.target || row.plan.targetBranch,
     ].some(value => value?.toLowerCase().includes(term)))
     return <main className="dy-yx dy-delivery">
-      {selected ? <PlanDetail key={JSON.stringify(selected)} scope={selected} meta={meta.value} revision={revision}
+      {selected ? <PlanDetail key={JSON.stringify(selected)} scope={selected} meta={meta.value} revision={revision} active={active}
         back={() => openPlan()} openMr={openMr} changed={changed} openSession={openSession} /> : <>
         <header><h2>交付计划</h2><div className="dy-yx-actions">
           <button onClick={() => { meta.retry(); result.retry() }}>刷新</button>
