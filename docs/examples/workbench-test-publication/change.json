@@ -1,0 +1,17 @@
+{
+  "documentType": "change",
+  "templateVersion": 1,
+  "projectId": "DEMO",
+  "planId": "WB-DEMO-01",
+  "issueId": "DEMO-32",
+  "repository": "demo/dy-dsh-plugin",
+  "commitSha": "111122223333444455556666777788889999aaaa",
+  "reason": "让测试正文可独立发布，并保持存量回执可查。",
+  "scope": [
+    "交付稿测试段读取和旧标题兼容",
+    "测试回写预览、发布和回执恢复",
+    "旧发布记录只读兼容及自动化回归"
+  ],
+  "executionRef": "execution.md",
+  "simulated": true
+}

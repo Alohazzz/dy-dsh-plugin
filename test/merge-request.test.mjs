@@ -269,6 +269,15 @@ test('Codeup resolves full paths, matches same-repository open MRs and creates w
   const api = codeupApi(async (url, signal, method, body) => {
     calls.push({ url, method, body })
     if (method === 'POST') return { localId: 2, detailUrl: 'https://codeup.aliyun.com/r/2' }
+    if (url.endsWith('/repositories/1/protectedBranches')) return [
+      { branch: 'main', allowMergeRoles: [40], mergeRequestSetting: { defaultAssignees: [{ userId: 'developer' }] } },
+      { branch: 'release/*', allowMergeUsers: [{ userId: 'release-user', name: '发布负责人' }] },
+    ]
+    if (url.endsWith('/repositories/1/members')) return [
+      { id: 12, userId: 'user', name: '成员', accessLevel: 40 }, { userId: 'inactive', state: 'blocked', accessLevel: 40 },
+      { userId: 'developer', accessLevel: 30 },
+      { memberType: 'TEAMS', userId: 'team' }, { userId: 'user', name: '成员' },
+    ]
     if (url.includes('?')) return [
       { sourceProjectId: 9, targetProjectId: 1, sourceBranch: 'fix', targetBranch: 'main', localId: 5 },
       { sourceProjectId: 1, targetProjectId: 1, sourceBranch: 'fix', targetBranch: 'main', localId: 2 },
@@ -282,6 +291,12 @@ test('Codeup resolves full paths, matches same-repository open MRs and creates w
   assert.deepEqual((await api.openForSource(1, 'fix')).map(m => m.localId), [2])
   assert.equal((await api.create(1, 'fix', 'main', 'title', '')).localId, 2)
   assert.equal(calls.at(-1).body.targetProjectId, 1)
+  assert.equal(Object.hasOwn(calls.at(-1).body, 'reviewerUserIds'), false)
+  assert.deepEqual(await api.reviewerCandidates(1, 'main'), [{ id: 'user', name: '成员' }])
+  assert.deepEqual(await api.reviewerCandidates(1, 'release/v2'), [{ id: 'release-user', name: '发布负责人' }])
+  assert.deepEqual(await api.reviewerCandidates(1, 'feature'), [])
+  await api.create(1, 'fix', 'main', 'title', '', ['user'])
+  assert.deepEqual(calls.at(-1).body.reviewerUserIds, ['user'])
 })
 
 test('Codeup pending review uses the current reviewer and repository-local MR identity', async () => {

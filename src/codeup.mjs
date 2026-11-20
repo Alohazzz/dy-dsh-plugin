@@ -146,9 +146,49 @@ export function codeupApi(call, organization) {
       if (typeof item?.comment_biz_id !== 'string' || !item.comment_biz_id) throw new Error('Codeup 未返回评论编号')
       return item.comment_biz_id
     },
-    async create(id, source, target, title, description) {
+    async reviewerCandidates(id, target) {
+      if (!Number.isSafeInteger(id) || id <= 0) throw new Error('无效的仓库编号')
+      if (typeof target !== 'string' || !target.trim()) throw new Error('请选择目标分支')
+      const repoPath = base + '/repositories/' + id
+      const raw = await call(repoPath + '/protectedBranches')
+      const rules = Array.isArray(raw) ? raw : raw?.rules ?? raw?.list ?? raw?.result
+      if (!Array.isArray(rules)) throw new Error('无法读取保护分支规则')
+      const users = new Map()
+      const roles = new Set()
+      const unresolvedNames = new Set()
+      for (const rule of rules) {
+        const branch = rule?.branch ?? rule?.branchName
+        if (typeof branch !== 'string' || (branch && !new RegExp('^' + branch.split('*').map(part =>
+          part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$').test(target))) continue
+        for (const role of rule.allowMergeRoles ?? []) roles.add(role)
+        for (const userId of rule.allowMergeUserIds ?? []) users.set(userId, { id: userId, name: userId })
+        for (const user of rule.allowMergeUsers ?? []) {
+          if (user?.userId) users.set(user.userId, { id: user.userId, name: user.name || user.username || user.userId })
+          else if (typeof user === 'string' || user?.name) unresolvedNames.add(user.name || user)
+        }
+      }
+      if (roles.size || unresolvedNames.size) {
+        const members = await call(repoPath + '/members')
+        if (!Array.isArray(members)) throw new Error('无法读取仓库成员')
+        const active = members.filter(member => member?.userId && member.memberType !== 'TEAMS' && member.state !== 'blocked')
+        for (const name of unresolvedNames) {
+          const ids = new Set(active.filter(member => member.name === name).map(member => member.userId))
+          if (ids.size > 1) throw new Error('合并权限规则中的姓名存在重名：' + name)
+          for (const userId of ids) users.set(userId, { id: userId, name })
+        }
+        for (const member of active) {
+          if (roles.has(member.accessLevel) || users.has(member.userId)) {
+            users.set(member.userId, { id: member.userId, name: member.name || member.username || member.userId })
+          }
+        }
+      }
+      return [...users.values()]
+    },
+    /** @param {string[]} [reviewerUserIds] */
+    async create(id, source, target, title, description, reviewerUserIds = []) {
       return receipt(await call(base + '/repositories/' + id + '/changeRequests', undefined, 'POST', {
         sourceProjectId: id, targetProjectId: id, sourceBranch: source, targetBranch: target, title, description,
+        ...(reviewerUserIds.length ? { reviewerUserIds } : {}),
       }))
     },
   }

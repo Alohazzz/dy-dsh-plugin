@@ -79,15 +79,16 @@ function restoreSelection(meta: Meta, preferDefault: boolean): Selection {
 }
 
 type Modal =
-  | { kind: 'add'; issues: Issue[] }
+  | { kind: 'add'; issues: Issue[]; initialPlanId?: string }
   | { kind: 'create'; issues: [] }
+  | { kind: 'documents'; issue: Issue }
   | { kind: 'publish' | 'move'; issue: Issue }
 
 window.__ModuleLoader__.load({
   id: 'dy-dsh-plugin',
   factory(require) {
     const React = require('react')
-    const { Plans, Requests, RequestDetail } = createDeliveryPanels(React, rpc)
+    const { Plans, Requests, RequestDetail, IssueDocuments } = createDeliveryPanels(React, rpc)
     const CreatePlanDialog = createPlanDialog(React, rpc)
     const { useEffect, useRef, useState } = React
 
@@ -417,6 +418,7 @@ window.__ModuleLoader__.load({
                     : marked.length === 0 && !(detail ? detail.plan : active.plan) && <button className="dy-yx-primary" disabled={!workspaceId}
                       onClick={() => setModal({ kind: 'add', issues: [active] })}><ActionIcon name="add" />添加到计划</button>}
                   <button disabled={!detail?.sessionId} onClick={() => openModal('publish', active)}><ActionIcon name="preview" />回写预览</button>
+                  <button type="button" onClick={() => setModal({ kind: 'documents', issue: active })}>过程文档</button>
                   <button onClick={() => openModal('move', active)}><ActionIcon name={pending[active.id] || detail?.pendingTarget ? 'refresh' : 'move'} />{(pending[active.id] || detail?.pendingTarget) ? '回查状态' : '状态流转'}</button>
                 </div>
                 {detailError && <p role="alert">{detailError} <button onClick={() => refresh(value => value + 1)}>重试读取</button></p>}
@@ -439,8 +441,13 @@ window.__ModuleLoader__.load({
         {modal?.kind === 'create' && <CreatePlanDialog meta={meta} scope={{ project, workspaceId }} close={() => {
             setModal(addAfterCreate ? { kind: 'add', issues: addAfterCreate } : undefined)
             setAddAfterCreate(undefined)
-          }} saved={() => { setMarked([]); refresh(value => value + 1); plansChanged() }} />}
-        {modal && modal.kind !== 'create' && <Dialog key={modal.kind} modal={modal}
+          }} saved={plan => {
+            if (addAfterCreate) setModal({ kind: 'add', issues: addAfterCreate, initialPlanId: plan.id })
+            setMarked([]); refresh(value => value + 1); plansChanged()
+          }} />}
+        {modal?.kind === 'documents' && <IssueDocuments project={modal.issue.project} id={modal.issue.id}
+          reference={modal.issue.reference} title={modal.issue.title} close={() => setModal(undefined)} />}
+        {modal && modal.kind !== 'create' && modal.kind !== 'documents' && <Dialog key={modal.kind} modal={modal}
           detail={'issue' in modal && detail?.id === modal.issue.id ? detail : undefined} meta={meta}
           workspaceId={workspaceId} project={project} close={() => setModal(undefined)} pending={pending}
           setPending={(id, target) => setPending(previous => ({ ...previous, [id]: target }))}
@@ -612,7 +619,7 @@ window.__ModuleLoader__.load({
     }
 
     function Dialog(props: {
-      modal: Exclude<Modal, { kind: 'create' }>; detail?: Details; meta?: Meta; workspaceId: string; project: string
+      modal: Exclude<Modal, { kind: 'create' | 'documents' }>; detail?: Details; meta?: Meta; workspaceId: string; project: string
       close(): void; pending: Record<string, string>; setPending(id: string, target: string): void
       onSuccess(issue: Issue, result: string): void
       onPlan(): void
@@ -622,7 +629,9 @@ window.__ModuleLoader__.load({
       const { kind } = modal
       const issue = 'issue' in modal ? modal.issue : undefined
       const issues = 'issues' in modal ? modal.issues : []
-      const base = { project, workspaceId, id: issue?.id }
+      const base = { project, workspaceId, id: issue?.id, planId: issue?.planId }
+      const initialPlanId = modal.kind === 'add' ? modal.initialPlanId : undefined
+      const [planReason, setPlanReason] = useState('')
       const element = useRef<HTMLDialogElement>(null)
       const [busy, setBusy] = useState(false)
       const [error, setError] = useState('')
@@ -648,7 +657,7 @@ window.__ModuleLoader__.load({
         setError('')
         const failure = (reason: unknown) => { if (!abort.signal.aborted) setError(errorText(reason)) }
         if (kind === 'add') rpc<Plan[]>('plans', base, abort.signal).then(rows => {
-          setPlans(rows); setPlan(rows[0]?.id || '')
+          setPlans(rows); setPlan(rows.find(row => row.id === initialPlanId)?.id ?? rows[0]?.id ?? '')
         }, failure)
         if (kind === 'publish') rpc<Preview>('preview', base, abort.signal).then(setDraft, failure)
         if (kind === 'move' && !targetPending) rpc<typeof states>('statuses', base, abort.signal).then(setStates, failure)
@@ -665,7 +674,7 @@ window.__ModuleLoader__.load({
       async function submit() {
         if (kind === 'add') {
           const ids = results ? results.filter(row => row.retryable).map(row => row.id) : issues.map(row => row.id)
-          const update = await rpc<PlanResult[]>('addToPlan', { ...base, planId, ids })
+          const update = await rpc<PlanResult[]>('addToPlan', { ...base, planId, ids, reason: planReason, initial: planId === initialPlanId })
           setResults(results ? results.map(row => update.find(item => item.id === row.id) ?? row) : update)
           props.onPlan()
         }
@@ -698,10 +707,10 @@ window.__ModuleLoader__.load({
       }
 
       const canSubmit = kind === 'add' && planId && (!results || results.some(row => row.retryable)) ||
-        kind === 'publish' && draft && draft.receipts.some(receipt => !receipt) ||
+        kind === 'publish' && draft && (draft.archivePending || draft.receipts.some(receipt => !receipt)) ||
         kind === 'move' && (targetPending || target)
       let action = { add: results ? '重试未完成项' : '确认加入',
-        publish: draft?.receipts.some(Boolean) ? '重试未发布评论' : '确认发布',
+        publish: draft?.archivePending ? '补存回执' : draft?.confirmed ? '重试测试回写' : '确认发布',
         move: targetPending ? '仅回查' : '确认流转并回查' }[kind]
       if (busy) action = '处理中…'
 
@@ -723,20 +732,25 @@ window.__ModuleLoader__.load({
                   {plans?.map(item => <option key={item.id} value={item.id}>{item.name} · {item.end}</option>)}
                 </select></label>}
               <p>待开发议题保留已有负责人和开始日期，并补齐空值。其余议题将设为待开发，负责人设为当前用户，计划开始日设为当天。云效要求填写计划完成时间且议题未填时，使用所选计划的完成日期。</p>
+              <label>加入原因<textarea rows={2} maxLength={1000} value={planReason} onChange={event => setPlanReason(event.target.value)} /></label>
               {results && <ul>{results.map(row => <li key={row.id}>
                 {issues.find(item => item.id === row.id)?.reference} · {row.result}{row.error && ' · ' + row.error}
               </li>)}</ul>}
             </>}
             {kind === 'publish' && draft && <>
-              {draft.sections.map((value, i) => <label key={i}>{i === 0 ? '开发向评论' : '测试向评论'}
+              {draft.sections.map((value, i) => <label key={i}>测试评论
                 {draft.receipts[i] && ' · 已发布 ' + draft.receipts[i]?.id + ' · ' + new Date(draft.receipts[i]!.time).toLocaleString()}
-                <textarea required value={value} readOnly={draft.receipts.some(Boolean) || Boolean(draft.error)} onChange={event => {
+                <textarea required value={value} readOnly={Boolean(draft.confirmed) || draft.receipts.some(Boolean) || Boolean(draft.error)} onChange={event => {
                   const update = [...draft.sections]; update[i] = event.target.value
                   setDraft({ ...draft, sections: update })
                 }} />
               </label>)}
+              {draft.history?.map(({ body, receipt }) => <details key={receipt.id}>
+                <summary>历史评论 · 已发布 {receipt.id}</summary>
+                <label>历史正文<textarea readOnly value={body} /></label>
+              </details>)}
               {draft.error && <p role="alert">{draft.error}</p>}
-              {!draft.receipts.some(Boolean) && !draft.error && <button type="button"
+              {!draft.confirmed && !draft.receipts.some(Boolean) && !draft.error && <button type="button"
                 onClick={() => void run(async () => setDraft(await rpc('preview', { ...base, regenerate: true })))}>重新生成草稿</button>}
             </>}
             {kind === 'move' && (targetPending ? <p>流转结果等待核对。重新回查只读取当前云效状态。</p> :

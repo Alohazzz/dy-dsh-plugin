@@ -5,7 +5,8 @@ import type { MrRef, PlanDelivery, PlanKey } from './contracts.ts'
 type Row = Awaited<ReturnType<typeof mrRepos>>[number]
 type Preview = Awaited<ReturnType<typeof mrPreview>>
 type Receipt = Awaited<ReturnType<typeof submitMr>>
-type Draft = { title: string; description: string; target: string }
+type Reviewer = { id: string; name: string }
+type Draft = { title: string; description: string; target: string; repositoryId: number; reviewers: Reviewer[] }
 export type Rpc = <T>(method: string, input: object, signal?: AbortSignal) => Promise<T>
 type PlanContext = PlanKey & { name: string; branch: string; delivery: PlanDelivery }
 const message = (e: unknown) => e instanceof Error ? e.message : String(e)
@@ -32,6 +33,22 @@ export function createMrPanel(React: typeof ReactType, rpc: Rpc) {
     const [error, setError] = useState('')
     const [revision, refresh] = useState(0)
     const [busy, setBusy] = useState(false)
+    const [candidates, setMembers] = useState<{ repositoryId: number; target: string; rows: Reviewer[]; error?: string }>()
+    const repositoryId = preview?.repository.id
+    const draft = drafts[key]
+    const target = draft?.target
+    const members = candidates && candidates.repositoryId === repositoryId && candidates.target === target ? candidates : undefined
+    useEffect(() => {
+      if (!repositoryId || !target) return
+      const abort = new AbortController()
+      setMembers(undefined)
+      rpc<Reviewer[]>('mrReviewerCandidates', { repositoryId, target }, abort.signal).then(rows => {
+        if (!abort.signal.aborted) setMembers({ repositoryId, target, rows })
+      }).catch(e => {
+        if (!abort.signal.aborted) setMembers({ repositoryId, target, rows: [], error: message(e) })
+      })
+      return () => abort.abort()
+    }, [repositoryId, target, revision])
     useEffect(() => {
       if (plan) return
       const abort = new AbortController()
@@ -52,10 +69,12 @@ export function createMrPanel(React: typeof ReactType, rpc: Rpc) {
         setPreview(value)
         setDrafts(old => {
           const prior = Object.hasOwn(old, key) ? old[key] : undefined
+          const target = plan?.delivery.target ?? (prior && value.targets.includes(prior.target) ? prior.target :
+            value.targets.includes(value.repository.defaultBranch) ? value.repository.defaultBranch : '')
           return { ...old, [key]: {
+            repositoryId: value.repository.id, reviewers: prior?.repositoryId === value.repository.id && prior.target === target ? prior.reviewers : [],
             title: prior?.title ?? plan?.name ?? value.branch, description: prior?.description ?? '',
-            target: plan?.delivery.target ?? (prior && value.targets.includes(prior.target) ? prior.target :
-              value.targets.includes(value.repository.defaultBranch) ? value.repository.defaultBranch : ''),
+            target,
           } }
         })
       }).catch(e => { if (!abort.signal.aborted) setError(message(e)) })
@@ -69,7 +88,6 @@ export function createMrPanel(React: typeof ReactType, rpc: Rpc) {
       setPreview(undefined); setError(''); setReceipt(undefined); select(next)
     }
     const row = rows?.find(r => r.key === key)
-    const draft = drafts[key]
     const existing = preview?.openMrs.find(mr => mr.target === draft?.target)
     const planMismatch = plan && preview && (preview.repository.id !== plan.delivery.repositoryId
       ? '仓库 origin 已变化，请返回计划重新配置。'
@@ -83,7 +101,8 @@ export function createMrPanel(React: typeof ReactType, rpc: Rpc) {
       if (!preview || !draft || busy || planMismatch || existing) return
       setBusy(true); onBusy?.(true); setError('')
       try {
-        const input = { workspaceId, key, ...draft, branch: preview.branch, sha: preview.sha,
+        const { reviewers, title, description, target } = draft
+        const input = { workspaceId, key, title, description, target, reviewerUserIds: reviewers.map(user => user.id), branch: preview.branch, sha: preview.sha,
           remoteSha: preview.remoteSha, repositoryId: preview.repository.id, needPush: preview.needPush }
         if (plan) {
           const ref = await rpc<MrRef>('submitPlanMr', { ...input, project: plan.project, planId: plan.planId })
@@ -121,7 +140,7 @@ export function createMrPanel(React: typeof ReactType, rpc: Rpc) {
             {!plan && <div className="dy-yx-mr-route">
               <div><small>当前分支</small><code className="dy-yx-mr-source">{preview.branch || '游离 HEAD'}</code></div>
               <span aria-hidden="true" className="dy-yx-mr-arrow">→</span>
-              <label>目标分支<select disabled={busy} value={draft.target} onChange={e => edit({ target: e.target.value })}>
+              <label>目标分支<select disabled={busy} value={draft.target} onChange={e => edit({ target: e.target.value, reviewers: [] })}>
                 <option value="">{preview.targets.length ? '请选择目标分支' : '无可用目标分支'}</option>
                 {preview.targets.map(t => <option key={t}>{t}</option>)}</select></label>
             </div>}
@@ -137,6 +156,21 @@ export function createMrPanel(React: typeof ReactType, rpc: Rpc) {
               {preview.commits.map(c => <div key={c}><code>{c}</code></div>)}</details>}
             <label>合并请求标题<input disabled={busy} required maxLength={256} value={draft.title} onChange={e => edit({ title: e.target.value })}/></label>
             <label>描述（选填）<textarea disabled={busy} maxLength={10000} value={draft.description} onChange={e => edit({ description: e.target.value })}/></label>
+            <label>审核人（选填）<select value="" disabled={busy || !members?.rows.length}
+              onChange={e => {
+                const user = members?.rows.find(row => row.id === e.target.value)
+                if (user) edit({ reviewers: [...draft.reviewers, user] })
+              }}>
+              <option value="">{!target ? '请先选择目标分支' : !members ? '正在读取合并权限…' : members.error ? '合并权限读取失败' :
+                members.rows.length ? '选择审核人' : '目标分支没有可选审核人'}</option>
+              {members?.rows.map(user =>
+                <option key={user.id} value={user.id} disabled={draft.reviewers.some(selected => selected.id === user.id)}>{user.name}</option>)}
+            </select></label>
+            {members?.error &&
+              <small role="alert" className="dy-yx-error">{members.error}。可点击“刷新仓库”重试。</small>}
+            {!!draft.reviewers.length && <div className="dy-yx-actions">{draft.reviewers.map(user =>
+              <button key={user.id} type="button" disabled={busy} aria-label={'移除审核人 ' + user.name}
+                onClick={() => edit({ reviewers: draft.reviewers.filter(selected => selected.id !== user.id) })}>{user.name} ×</button>)}</div>}
             <div className="dy-yx-mr-footer">
               {!plan && <small>{preview.blocked || (!draft.target ? '请选择目标分支' : '本次仓库 · ' + row?.name)}</small>}
               {existing ? <span>{plan ? '已发现开放 MR，请返回计划关联。' : <>已有开放 MR · {existing.url ? <a href={existing.url} target="_blank" rel="noreferrer">查看 !{existing.localId}</a> : '!' + existing.localId}</>}</span>

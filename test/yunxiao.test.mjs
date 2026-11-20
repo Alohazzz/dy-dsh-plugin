@@ -73,9 +73,9 @@ test('云效编号查询、会话恢复、评论补发与状态确认', async t 
   await writeFile(discussion, work)
   const preview = await run('preview')
   assert.equal(preview.kind, 'success', preview.text)
-  assert.doesNotMatch(preview.text, /价值评分/)
+  assert.doesNotMatch(preview.text, /价值评分|修改方案汇总/)
   const code = preview.text.split('/yunxiao publish ')[1]
-  await writeFile(discussion, work.replace('修改说明', '修改了预览内容'))
+  await writeFile(discussion, work.replace('测试说明', '修改了预览内容'))
   assert.equal((await run(`publish ${code}`)).kind, 'error')
   assert.equal(posts, 0)
   await writeFile(discussion, work)
@@ -84,9 +84,9 @@ test('云效编号查询、会话恢复、评论补发与状态确认', async t 
   handler = createHandler({ clientFactory, home })
   assert.equal((await run(`publish ${code}`)).kind, 'success')
   assert.equal((await run(`publish ${code}`)).kind, 'success')
-  assert.equal(posts, 2)
+  assert.equal(posts, 1)
 
-  await writeFile(discussion, work.replace('修改说明', '追加交付说明'))
+  await writeFile(discussion, work.replace('测试说明', '追加测试说明'))
   const newCode = (await run('preview')).text.split('/yunxiao publish ')[1]
   const concurrentRun = createHandler({ clientFactory, home })
   await Promise.all([
@@ -94,7 +94,7 @@ test('云效编号查询、会话恢复、评论补发与状态确认', async t 
     concurrentRun({ agent, rawInput: `publish ${newCode}` }),
   ])
   assert.equal((await run(`publish ${newCode}`)).kind, 'success')
-  assert.equal(posts, 3)
+  assert.equal(posts, 2)
 
   assert.match((await run('statuses')).text, /待处理/)
   const transition = await run('transition done')

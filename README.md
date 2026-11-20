@@ -61,17 +61,17 @@ MR 详情按 Codeup 状态提供「批准」「合并」和「关闭 MR」。批
 | 命令 | 作用 |
 | --- | --- |
 | `/yunxiao read PROJ-123` | 读取正文、附件及正文图片链接 |
-| `/yunxiao preview` | 预览开发向与测试向评论 |
-| `/yunxiao publish <预览码>` | 发布预览的两条评论，重试时复用回执 |
+| `/yunxiao preview` | 预览测试评论 |
+| `/yunxiao publish <预览码>` | 发布已确认的测试评论，重试时复用回执 |
 | `/yunxiao statuses` | 查看当前状态与可选状态 ID |
 | `/yunxiao transition <状态 ID>` | 预览状态流转 |
 | `/yunxiao transition <状态 ID> <预览码>` | 确认流转并查看核对结果 |
 
 开始执行时，插件在计划代码目录的 `.dsh/yunxiao/` 会话目录保存定稿 `plan.md`、议题原文 `issue.md` 和任务清单 `task.json`。派发中断时，从计划重试可沿用原定稿、原会话和首条消息。
 
-目标会话可用时，插件调用自带的 `/yunxiao-dsh-execute` 技能。技能不可用时，首条消息携带执行约定。用户要求提交代码时，提交信息须带议题编号。完成后可从同目录的 `discussion.md` 预览回写。
+目标会话可用时，插件调用自带的 `/yunxiao-dsh-execute` 技能。技能不可用时，首条消息携带执行约定。完成后从 `discussion.md` 预览测试回写。修改方法和实际结果保存在 `execution.md`，通过计划内的「归档执行成果」确认并归档。提交信息带议题编号后，可按 SHA 关联变更记录。
 
-请在业务仓库为 `.dsh/yunxiao/` 配置本地 Git 排除。计划、会话绑定和回写回执保存在 DSH 用户目录的 `dy-yunxiao/` 下。
+请在业务仓库为 `.dsh/yunxiao/` 配置本地 Git 排除。会话绑定和发布状态由 DSH 用户目录下的 `dy-yunxiao/` 管理。创建计划后，调研报告、方案、执行成果、最终测试正文和回执按阶段归档到计划所绑定工作区的 `docs/workbench/`。跨计划调研可按议题、模块和关键字查档。版本化模板和文档 Skill 随插件安装，价值评分由 GitHub #5 后续接入。
 
 ## 构建
 

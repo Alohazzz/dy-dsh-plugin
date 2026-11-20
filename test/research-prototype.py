@@ -13,6 +13,7 @@ def open_issue_workbench(page, with_questions=False, execution=None):
     plan_row = dict(**scope, plan=plan, projectName="测试项目", workspaceName="测试工作区")
     rows = []
     executions = []
+    publications = []
 
     def respond(route):
         request = route.request.post_data_json
@@ -24,6 +25,8 @@ def open_issue_workbench(page, with_questions=False, execution=None):
         elif method in ("search", "detail"):
             listed = [dict(issue, **(dict(plan=plan["name"], planId=plan["id"]) if issue["id"] in plan["members"] else {}))
                       for issue in issues]
+            if len(executions) == 2:
+                listed[0]["sessionId"] = "example-execution"
             value = (dict(rows=listed, more=False) if method == "search" else
                      dict(next(issue for issue in listed if issue["id"] == args["id"]), body=[], files=[]))
         elif method == "plans":
@@ -80,6 +83,26 @@ def open_issue_workbench(page, with_questions=False, execution=None):
             if len(executions) == 1:
                 return route.fulfill(status=400, json=dict(error="派发中断"))
             value = dict(sessionId="example-execution")
+        elif method in ("preview", "publish"):
+            assert args["id"] == "issue-1"
+            value = dict(code="test-draft", sections=["测试步骤"], receipts=[None],
+                         history=[dict(body="历史方法正文", receipt=dict(id="old-result", time="2026-11-19T00:00:00Z"))])
+            if method == "publish":
+                assert args["sections"] == ["确认后的测试正文"]
+                publications.append(args["sections"])
+                value.update(sections=args["sections"], receipts=[dict(id="test-result", time="2026-11-20T00:00:00Z")], confirmed=True)
+        elif method == "issueDocuments":
+            assert args == dict(project="project", id="issue-1")
+            archive = dict(workspaceId="w", workspaceName="测试工作区", planId=plan["id"],
+                           planName=plan["name"], version=1, time="2026-11-20T00:00:00Z")
+            value = dict(errors=[], documents=[dict(archive, type="research", title="调研报告"),
+                                              dict(archive, type="proposal", title="执行方案")])
+        elif method == "issueDocument":
+            assert args == dict(project="project", id="issue-1", workspaceId="w", planId=plan["id"], type=args["type"], version=1)
+            value = dict(format="markdown", body={
+                "research": "## 业务背景与范围\n\n归档的调研正文",
+                "proposal": "## 实施步骤\n\n归档的执行方案",
+            }[args["type"]])
         else:
             raise AssertionError(method)
         route.fulfill(json=dict(value=value))
@@ -137,3 +160,44 @@ def check(page):
     entry = page.get_by_role("button", name="研发工作台", exact=True)
     entry.click()
     expect(issue.get_by_role("button", name="查看执行会话")).to_be_visible()
+    page.get_by_role("button", name="云效议题", exact=True).click()
+    page.get_by_role("button", name="结算筛选", exact=True).click()
+    page.get_by_role("region", name="议题详情").get_by_role("button", name="过程文档").click()
+    documents = page.get_by_role("dialog", name="议题过程文档")
+    directory = documents.get_by_role("navigation", name="文档目录")
+    reader = documents.get_by_role("region", name="正文预览")
+    research = directory.get_by_role("button", name="调研报告 · v1")
+    expect(research).to_have_attribute("aria-current", "true")
+    expect(reader.get_by_role("heading", name="业务背景与范围")).to_be_visible()
+    assert directory.bounding_box()["x"] < reader.bounding_box()["x"]
+    assert directory.evaluate("(el) => getComputedStyle(el).backgroundColor") != reader.evaluate("(el) => getComputedStyle(el).backgroundColor")
+    expect(research).to_have_css("border-top-width", "0px")
+    proposal = directory.get_by_role("button", name="执行方案 · v1")
+    proposal.click()
+    expect(proposal).to_have_attribute("aria-current", "true")
+    expect(reader.get_by_role("heading", name="实施步骤")).to_be_visible()
+    expect(research).to_be_visible()
+    category = directory.get_by_role("button", name="调研报告", exact=True)
+    category.click()
+    expect(category).to_have_attribute("aria-expanded", "false")
+    expect(research).to_have_count(0)
+    expect(reader.get_by_role("heading", name="实施步骤")).to_be_visible()
+    category.click()
+    expect(research).to_be_visible()
+    original_viewport = page.viewport_size
+    page.set_viewport_size({"width": 420, "height": 680})
+    page.emulate_media(color_scheme="dark")
+    assert directory.bounding_box()["y"] < reader.bounding_box()["y"]
+    assert directory.evaluate("(el) => getComputedStyle(el).backgroundColor") != reader.evaluate("(el) => getComputedStyle(el).backgroundColor")
+    expect(reader.get_by_text("归档的执行方案")).to_be_visible()
+    expect(documents.get_by_role("button", name="关闭", exact=True)).to_be_in_viewport()
+    documents.get_by_role("button", name="关闭", exact=True).click()
+    page.set_viewport_size(original_viewport)
+    page.emulate_media(color_scheme="light")
+    page.get_by_role("button", name="回写预览", exact=True).click()
+    preview = page.get_by_role("dialog", name="回写预览", exact=True)
+    expect(preview.get_by_label("开发向评论")).to_have_count(0)
+    expect(preview.get_by_text("历史评论 · 已发布 old-result")).to_be_visible()
+    preview.get_by_label("测试评论").fill("确认后的测试正文")
+    preview.get_by_role("button", name="确认发布", exact=True).click()
+    expect(preview.get_by_text("测试评论 · 已发布 test-result")).to_be_visible()

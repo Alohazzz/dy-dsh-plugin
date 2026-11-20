@@ -9,6 +9,7 @@ def check(page):
     creations = []
     detail_reads = []
     removals = []
+    reports = {}
     mr_states = {1: 'UNDER_REVIEW', 2: 'UNDER_REVIEW'}
     actions = []
     binding = dict(key='Nto.His/Term', repositoryId=2, path='org/Term', target='release')
@@ -62,6 +63,14 @@ def check(page):
             sub = key != '.'
             value = dict(**rows[int(sub)], repository=dict(path='org/' + rows[int(sub)]['name'], id=1+int(sub), defaultBranch='main'),
                          remoteSha='' if sub else 'a'*40, targets=['main','release'], blocked='', needPush=sub, commits=[], openMrs=[])
+        elif method == 'mrReviewerCandidates':
+            if args['repositoryId'] == 1:
+                value = [dict(id='root', name='主仓成员')]
+            elif args['target'] == 'main':
+                value = [dict(id='first', name='成员甲')]
+            else:
+                assert args['target'] == 'release'
+                value = [dict(id='second', name='成员乙')]
         elif method == 'submitMr':
             submissions.append(args)
             value = dict(localId=5, url='https://codeup.aliyun.com/test', existing=False, pushed=args['needPush'])
@@ -74,12 +83,23 @@ def check(page):
                            owner='苏一', state=dict(id='doing', name='开发中'), url='')] if plan['members'] else []
             value = dict(plan=plan, candidates=candidates, issues=issues, mrStatus=plan_row(plan)['mrStatus'])
         elif method == 'removeFromPlan':
-            assert args == dict(project='project', workspaceId='w', planId='legacy', id='issue1')
+            assert args == dict(project='project', workspaceId='w', planId='legacy', id='issue1', reason='移入后续计划', defer=False)
             removals.append(args)
             if len(removals) == 1:
                 return route.fulfill(status=400, json=dict(error='云效暂时不可用'))
             plans['legacy']['members'].remove(args['id'])
             value = dict(removed=True)
+        elif method == 'planCompletion':
+            saved = reports.get(args['planId'], [])
+            value = dict(reports=saved)
+            if saved:
+                value.update(latest=saved[-1], markdown='# 计划完成报告\n\n## 交付概况\n\n测试回写待核实\n\n'
+                             '| 议题 | 依据 |\n| --- | --- |\n| E2E-1 | [执行小结](issues/execution.md) |')
+        elif method == 'updatePlanCompletion':
+            saved = reports.setdefault(args['planId'], [])
+            version = len(saved) + 1
+            value = dict(reportStatus=args['action'], version=version, file=f'completion-v{version}.md', time='2026-11-20T03:00:00Z')
+            saved.append(value)
         elif method == 'planDeliveryOptions':
             value = (dict(repository=dict(path='org/Term', id=2, defaultBranch='release'), targets=['release'])
                      if args['planId'] == 'created' else
@@ -138,8 +158,10 @@ def check(page):
     page.get_by_role('button', name='发起合并请求', exact=True).click()
     drawer = page.get_by_role('dialog', name='发起合并请求')
     expect(drawer.get_by_label('合并请求标题')).to_have_value('结算导出计划')
+    drawer.get_by_label('审核人（选填）').select_option('root')
     drawer.get_by_role('button', name='创建合并请求', exact=True).click()
     expect(page.get_by_text('已关联计划与 MR !5')).to_be_visible()
+    assert submissions[0]['reviewerUserIds'] == ['root']
     assert (submissions[0]['key'], submissions[0]['branch'], submissions[0]['target']) == ('.', 'root-fix', 'main')
     page.get_by_role('button', name='查看 MR !5').click()
     expect(page.get_by_role('heading', name='!5 结算导出修正')).to_be_visible()
@@ -148,12 +170,14 @@ def check(page):
     page.emulate_media(color_scheme='dark')
     remove = page.get_by_role('button', name='移出计划 HSP-2086')
     remove.click()
-    confirmation = page.get_by_role('dialog', name='移出计划', exact=True)
+    confirmation = page.get_by_role('dialog', name='调整议题范围', exact=True)
     expect(confirmation).to_contain_text('清空')
     confirmation.get_by_role('button', name='取消', exact=True).click()
     assert not removals
     remove.click()
     confirm = confirmation.get_by_role('button', name='确认移出')
+    expect(confirm).to_be_disabled()
+    confirmation.get_by_label('原因').fill('移入后续计划')
     expect(confirm).to_be_in_viewport()
     confirm.click()
     expect(confirmation.get_by_role('alert')).to_contain_text('云效暂时不可用')
@@ -174,6 +198,20 @@ def check(page):
     expect(drawer.get_by_role('radio', name='!5 刷新术语缓存')).to_be_checked()
     expect(drawer.get_by_role('button', name='确认关联')).to_be_in_viewport()
     drawer.get_by_role('button', name='确认关联').click()
+    report = page.get_by_role('region', name='计划完成报告', exact=True)
+    report.get_by_role('button', name='生成报告草稿').click()
+    report.get_by_role('button', name='查看当前报告').click()
+    report_dialog = page.get_by_role('dialog', name='计划完成报告', exact=True)
+    expect(report_dialog.get_by_role('heading', name='交付概况')).to_be_visible()
+    expect(report_dialog.get_by_text('测试回写待核实')).to_be_visible()
+    expect(report_dialog.get_by_role('table').get_by_role('cell', name='执行小结')).to_be_visible()
+    report_dialog.get_by_role('button', name='关闭', exact=True).click()
+    expect(report_dialog).to_have_count(0)
+    report.get_by_role('button', name='确认审核').click()
+    review = page.get_by_role('dialog', name='确认计划报告')
+    review.get_by_label('审核意见').fill('核对完毕')
+    review.get_by_role('button', name='确认', exact=True).click()
+    expect(report.get_by_text('v2 · 已审核')).to_be_visible()
     page.get_by_role('button', name='查看 MR !5').click()
     expect(page.get_by_role('heading', name='!5 刷新术语缓存')).to_be_visible()
     page.get_by_role('button', name='返回计划', exact=True).click()
@@ -193,9 +231,13 @@ def check(page):
     sub = main.get_by_role('button', name='Term 子仓库', exact=False)
     sub.click()
     main.get_by_label('合并请求标题').fill('子仓草稿')
+    main.get_by_label('审核人（选填）').select_option('first')
     main.get_by_label('目标分支').select_option('release')
+    main.get_by_label('审核人（选填）').select_option('second')
+    expect(main.get_by_role('button', name='移除审核人 成员甲')).to_have_count(0)
     main.get_by_role('button', name='HIS 主仓库', exact=False).click()
     expect(main.get_by_label('合并请求标题')).to_have_value('主仓草稿')
+    expect(main.get_by_role('button', name='移除审核人 成员乙')).to_have_count(0)
     sub.click()
     expect(main.get_by_label('目标分支')).to_have_value('release')
     page.set_viewport_size(dict(width=700,height=750))
@@ -203,6 +245,7 @@ def check(page):
     main.get_by_role('button', name='推送并创建合并请求', exact=True).click()
     expect(main.get_by_role('link', name='查看 MR !5')).to_be_visible()
     assert len(submissions) == 2
+    assert submissions[-1]['reviewerUserIds'] == ['second']
     assert (submissions[-1]['key'], submissions[-1]['title'], submissions[-1]['target']) == ('Nto.His/Term','子仓草稿','release')
     page.get_by_role('button', name='交付计划', exact=True).click()
     if page.get_by_role('button', name='返回交付计划', exact=True).is_visible():

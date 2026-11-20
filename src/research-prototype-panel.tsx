@@ -83,9 +83,12 @@ export function createResearchPrototype(React: typeof ReactType, rpc: Rpc) {
         <div className="dy-yx-actions"><button onClick={() => openSession(row.sessionId)}>查看会话</button>
           <span role="status">{sending === row.sessionId ? '正在提交意见…' : researchProgress(row) || (draft && '草稿 v' + row.drafts.length + ' 已就绪')}</span></div>
         {row.error && <p role="alert">{draft ? (researchProgress(row) === '未送达' ? '修订意见未送达。' : '修订失败。') : ''}{row.error.includes('already owned by an active write handle') ? '原会话正被另一个 DSH 工作台占用，请释放该会话后重试。' : row.error}</p>}
-        {draft && <><h3>方案预览 v{row.drafts.length}</h3>
+        {draft && <><h3>{draft.report && !draft.proposal ? '调研报告' : '方案预览'} v{row.drafts.length}</h3>
           {draft.feedback && <p>本轮意见 · {draft.feedback}</p>}
           <Markdown text={draft.markdown} />
+          {draft.report && draft.proposal && <details><summary>查看对应调研报告</summary><Markdown text={draft.report} /></details>}
+          {row.reviews?.length ? <details><summary>审核记录</summary><ul>{row.reviews.map((review, index) =>
+            <li key={index}>v{review.version} · {{ submitted: '送审', returned: '退回', approved: '批准' }[review.result]} · {review.actor} · {new Date(review.time).toLocaleString()}{review.note && ' · ' + review.note}</li>)}</ul></details> : null}
           {row.drafts.length > 1 && <details key={row.sessionId}><summary>查看上一版 · v{row.drafts.length - 1}</summary><Markdown text={row.drafts[row.drafts.length - 2].markdown} /></details>}
           <div className="dy-research-feedback">
             <label>给原 Agent 的修改意见<textarea rows={4} maxLength={8000} value={feedbackText} disabled={sending === row.sessionId}

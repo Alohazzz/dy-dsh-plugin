@@ -20,6 +20,7 @@ export function createPlanDialog(React: typeof ReactType, rpc: Rpc) {
     const [repositoryError, setRepositoryError] = useState('')
     const [revision, retry] = useState(0)
     const [name, setName] = useState('')
+    const [goal, setGoal] = useState('')
     const [kind, setKind] = useState<PlanKind>('feature')
     const [version, setVersion] = useState('')
     const [versions, setVersions] = useState<string[]>([])
@@ -100,7 +101,7 @@ export function createPlanDialog(React: typeof ReactType, rpc: Rpc) {
       setBusy(true); setError('')
       try {
         const plan = await rpc<Plan>('createPlan', {
-          project, workspaceId, repositoryKey, name, kind, version, branch, baseBranch, targetBranch, end,
+          project, workspaceId, repositoryKey, name, goal, kind, version, branch, baseBranch, targetBranch, end,
           useExistingRemote, ...(useWorktree ? { worktreeDir } : {}),
         })
         close()
@@ -138,6 +139,7 @@ export function createPlanDialog(React: typeof ReactType, rpc: Rpc) {
           <label>计划名称<input value={name} required maxLength={100} onChange={event => editBranch(() => {
             setName(event.target.value); setManualBranch(undefined)
           })} /></label>
+          <label>计划目标<textarea value={goal} rows={2} maxLength={1000} onChange={event => setGoal(event.target.value)} /></label>
           <fieldset className="dy-yx-plan-kinds"><legend>类型</legend><div>
             {Object.entries(planKinds).map(([key, label]) => <button key={key} type="button" aria-pressed={kind === key}
               onClick={() => editBranch(() => setKind(key as PlanKind))}>{key} · {label}</button>)}

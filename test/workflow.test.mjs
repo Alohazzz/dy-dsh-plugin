@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, rmdir, writeFile } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -12,6 +12,8 @@ import { createResearch } from '../src/research-prototype.ts'
 import { researchSkill } from '../src/research-skill.ts'
 import { planWritingInstructions, writingSkill } from '../src/writing-skill.mjs'
 import { createWorkflow, executionSkill } from '../src/workflow.ts'
+import { archiveIndex, archiveScope } from '../src/workbench-archive.ts'
+import { templateFor } from '../src/workbench-documents.mjs'
 
 async function addPlannedIssue(workflow, cwd, { project, id }) {
   const plan = await workflow.createPlan(cwd, project, { name: '交付计划', branch: 'feature/test', end: '2026-11-20' })
@@ -99,7 +101,8 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
   assert.ok(prompts[0].content[0].text.startsWith(executionSkill.content))
   assert.ok(prompts[0].content[0].text.includes(planWritingInstructions))
   assert.match(prompts[0].content[0].text, /src\/module\.ts:42/)
-  assert.match(prompts[0].content[0].text, /^## 修改方案汇总\r?\n面向开发人员/m)
+  assert.match(prompts[0].content[0].text, /保存执行小结/)
+  assert.ok(registeredSkills.some(item => item.name === 'dy-workbench-docs'))
   assert.match(prompts[0].content[0].text, /^## 影响范围与测试\r?\n面向测试人员.*区分已验证、验证失败和待验证项/m)
   assert.equal((await rpc('workbenchPlan', input)).value.issues[0].sessionId, sessionId)
   assert.equal(await readFile(join(cwd, '.dsh', 'yunxiao', digest(sessionId), 'plan.md'), 'utf8'), '# 当前方案')
@@ -244,10 +247,11 @@ for (const available of [true, false]) {
     assert.match(source, /确认时的原文/)
     assert.doesNotMatch(source, /云效已修改/)
     await writeFile(task.discussion, '## 修改方案汇总\n实现说明\n## 影响范围与测试\n验证结果')
-    assert.equal((await workflow.preview(cwd, key)).sections.length, 2)
+    assert.equal((await workflow.preview(cwd, key)).sections.length, 1)
     const run = createHandler({ home, clientFactory: () => api, publication: workflow })
     const result = await run({ rawInput: 'preview', agent: { session: { id: sessionId, header: { cwd: worktree } } } })
-    assert.match(result.text, /实现说明/)
+    assert.match(result.text, /验证结果/)
+    assert.doesNotMatch(result.text, /实现说明/)
   })
 }
 
@@ -265,7 +269,7 @@ test('旧命令绑定仍可预览已有交付稿', async t => {
   const run = createHandler({ home, clientFactory: () => api })
   const result = await run({ rawInput: 'preview', agent: { session: { id: sessionId, header: { cwd } } } })
   assert.equal(result.kind, 'success', result.text)
-  assert.match(result.text, /已有改动/)
+  assert.doesNotMatch(result.text, /已有改动/)
 })
 
 test('批量排期保留已成功项，重试只处理失败议题', async t => {
@@ -412,7 +416,7 @@ test('状态回查超时，重启后回查成功且不重复写入', async t => 
   assert.equal(writes, 1)
 })
 
-test('评论预览编辑后第二条失败，重启后只补发未完成评论', async t => {
+test('旧稿只预览测试，发布失败重启后保留已确认测试正文', async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'dy-yunxiao-workflow-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
   const comments = []
@@ -426,7 +430,7 @@ test('评论预览编辑后第二条失败，重启后只补发未完成评论',
       attachments: async () => [], schedule: async () => {},
       comments: async () => comments,
       comment: async (_, content) => {
-        if (++attempts === 2) throw new YunxiaoHttpError(422, '模拟发布失败')
+        if (++attempts === 1) throw new YunxiaoHttpError(422, '模拟发布失败')
         const id = 'comment-' + attempts
         comments.push({ id, content })
         return id
@@ -440,16 +444,85 @@ test('评论预览编辑后第二条失败，重启后只补发未完成评论',
   await writeFile(join(cwd, '.dsh', 'yunxiao', digest(sessionId), 'discussion.md'),
     '## 修改方案汇总\n\n原开发文案\n\n## 影响范围与测试\n\n测试文案')
   const draft = await workflow.preview(cwd, key)
-  const edits = ['确认后的开发文案', draft.sections[1]]
+  assert.deepEqual(draft.sections, ['## 影响范围与测试\n\n测试文案'])
+  const edits = ['确认后的测试文案']
   const first = await workflow.publish(cwd, key, draft.code, edits)
-  assert.equal(first.receipts[0].id, 'comment-1')
-  assert.equal(first.receipts[1], null)
+  assert.equal(first.receipts[0], null)
   assert.equal(first.error, '模拟发布失败')
   workflow = createWorkflow(options)
   const saved = await workflow.preview(cwd, key)
   assert.deepEqual(saved.sections, edits)
   const retry = await workflow.publish(cwd, key, saved.code, saved.sections)
-  assert.deepEqual(retry.receipts.map(receipt => receipt.id), ['comment-1', 'comment-3'])
-  assert.equal(comments.length, 2)
-  assert.match(comments[0].content, /确认后的开发文案/)
+  assert.deepEqual(retry.receipts.map(receipt => receipt.id), ['comment-2'])
+  assert.equal(comments.length, 1)
+  assert.match(comments[0].content, /确认后的测试文案/)
+})
+
+test('同计划按议题关联实际提交，回执存盘失败后重试只补归档，重新加入另建执行会话', async t => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'dy-execution-archive-')))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
+  git('init', '--initial-branch=feature/test')
+  git('config', 'user.name', 'Test')
+  git('config', 'user.email', 'test@example.invalid')
+  git('commit', '--allow-empty', '-m', 'initial')
+  const commits = {}
+  for (const id of ['APP-1', 'APP-2']) {
+    await writeFile(join(cwd, id + '.txt'), id)
+    git('add', id + '.txt')
+    git('commit', '-m', id + ' 交付')
+    commits[id] = git('rev-parse', 'HEAD')
+  }
+  let posts = 0
+  const options = { home: join(cwd, 'state'), host: { create: async () => {}, prompt: async () => {} },
+    client: () => ({ organization: 'org', get: async id => ({ id, serialNumber: id, description: '正文' }),
+      attachments: async () => [], schedule: async () => {}, unschedule: async () => {}, comments: async () => [],
+      comment: async () => { posts++; return 'comment-1' } }) }
+  const workflow = createWorkflow(options)
+  const plan = await workflow.createPlan(cwd, 'project', { name: '计划', branch: 'feature/test', end: '2026-11-25' })
+  const inputs = ['APP-1', 'APP-2'].map(id => ({ project: 'project', planId: plan.id, id }))
+  await workflow.addToPlan(cwd, 'project', plan.id, inputs.map(input => input.id), '首次排期', true)
+  const prepare = async () => ({ cwd, version: 1, readDraft: () => '# 已批准' })
+  const bindings = await Promise.all(inputs.map(input => workflow.executePlan(cwd, input, prepare)))
+  for (const binding of bindings) {
+    const folder = join(cwd, '.dsh', 'yunxiao', digest(binding.sessionId))
+    await writeFile(join(folder, 'execution.md'), templateFor('execution').sections.map(title => `## ${title}\n\n已核对`).join('\n\n'))
+    await writeFile(join(folder, 'discussion.md'), '## 影响范围与测试\n\n模拟通过')
+  }
+  await assert.rejects(workflow.archiveExecution(cwd, { ...inputs[0], commit: commits['APP-2'] }), /缺少当前议题编号/)
+  for (const input of inputs) {
+    const results = await Promise.all([workflow.archiveExecution(cwd, { ...input, commit: commits[input.id] }),
+      workflow.archiveExecution(cwd, { ...input, commit: commits[input.id] })])
+    assert.equal(results[0].change.file, results[1].change.file)
+  }
+  const scope = archiveScope(cwd, 'org', 'project', plan.id)
+  const index = await archiveIndex(scope)
+  const rows = index.plans[0].issues
+  for (const row of rows) {
+    assert.equal(row.documents.find(document => document.type === 'change').commitSha, commits[row.id])
+    assert.equal(row.documents.filter(document => document.type === 'change').length, 1)
+  }
+  const manifest = join(cwd, index.folder, ...rows.find(row => row.id === 'APP-1').folder.split('/'), 'issue.json')
+  await rename(manifest, manifest + '.original')
+  await mkdir(manifest)
+  const draft = await workflow.preview(cwd, inputs[0])
+  const published = await workflow.publish(cwd, inputs[0], draft.code, draft.sections)
+  assert.equal(published.archivePending, true)
+  assert.match(published.error, /档案文件冲突/)
+  assert.equal(posts, 1)
+  await rmdir(manifest)
+  await rename(manifest + '.original', manifest)
+  const restarted = createWorkflow(options)
+  assert.equal((await restarted.publish(cwd, inputs[0], draft.code, draft.sections)).archivePending, false)
+  assert.equal(posts, 1)
+  const publication = (await archiveIndex(scope)).plans[0].issues.find(row => row.id === 'APP-1')
+    .documents.find(document => document.type === 'publication')
+  assert.ok(publication)
+  await workflow.removeFromPlan(cwd, 'project', plan.id, 'APP-1', '重新排期')
+  await workflow.addToPlan(cwd, 'project', plan.id, ['APP-1'], '二次加入')
+  const again = await workflow.executePlan(cwd, inputs[0], prepare)
+  assert.notEqual(again.sessionId, bindings[0].sessionId)
+  const history = (await archiveIndex(scope)).plans[0].history
+  assert.deepEqual(history.initialMembers, ['APP-1', 'APP-2'])
+  assert.deepEqual(history.changes.filter(change => change.issueId === 'APP-1').map(change => change.kind), ['initial', 'removed', 'added'])
 })

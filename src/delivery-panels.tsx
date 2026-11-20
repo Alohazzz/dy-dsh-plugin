@@ -5,9 +5,11 @@ import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { mrReviewCommentLimit, type Meta, type MrRef, type MrReviewComment, type MrReviewView, type Plan,
   type MrAction, type MrActionPreview, type MrActionResult, type MrMergeType,
+  type IssueDocument, type IssueDocumentBody, type IssueDocuments as IssueDocumentList, type IssueKey,
   type PlanDetails, type PlanIssue, type PlanKey, type PlanRow } from './contracts.ts'
 import type { codeupApi } from './codeup.mjs'
 import type { deliveryOptions, mrRepos } from './merge-request.ts'
+import type { CompletionAction, workbenchCompletion } from './workbench-completion.ts'
 import { createResearchPrototype } from './research-prototype-panel.tsx'
 import { createMrPanel, type Rpc } from './mr-panel.tsx'
 
@@ -24,6 +26,11 @@ const states: Record<string, string> = {
 const mrActionLabels: Record<MrAction, string> = { approve: '批准', merge: '合并', close: '关闭 MR' }
 const mrActionReceipts: Record<MrAction, string> = { approve: '评审已通过', merge: 'MR 已合并', close: 'MR 已关闭' }
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
+const renderReport = (markdown: string) => DOMPurify.sanitize(marked.parse(markdown, { async: false }), {
+  ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'strong', 'em', 'ul', 'ol', 'li', 'code', 'pre', 'blockquote',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'br'],
+  ALLOWED_ATTR: [],
+})
 const keyOf = (ref: MrRef) => ref.repositoryId + ':' + ref.localId
 const planKey = ({ project, workspaceId, planId }: PlanKey) => ({ project, workspaceId, planId })
 const planStatus = (plan: Plan, status?: string) => !plan.delivery ? '分支待配置' : !plan.delivery.mr ? '未提 MR' :
@@ -69,8 +76,8 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       <tbody>{children}</tbody>
     </table></div>
   }
-  function Modal({ label, drawer, busy, close, children, dismissOnBackdrop }: {
-    label: string; drawer?: boolean; dismissOnBackdrop?: boolean; busy: boolean; close(): void; children: ReactType.ReactNode
+  function Modal({ label, drawer, busy, close, children, dismissOnBackdrop, className }: {
+    label: string; drawer?: boolean; dismissOnBackdrop?: boolean; busy: boolean; close(): void; children: ReactType.ReactNode; className?: string
   }) {
     const element = useRef<HTMLDialogElement>(null)
     const outside = useRef(false)
@@ -84,10 +91,83 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       dialog.showModal()
       return () => dialog.close()
     }, [])
-    return <dialog ref={element} className={'dy-yx dy-yx-dialog' + (drawer ? ' dy-delivery-drawer' : '')} aria-label={label}
+    return <dialog ref={element} className={['dy-yx', 'dy-yx-dialog', drawer && 'dy-delivery-drawer', className].filter(Boolean).join(' ')} aria-label={label}
       onPointerDown={event => { outside.current = isOnBackdrop(event) }}
       onClick={event => { if (dismissOnBackdrop && !busy && outside.current && isOnBackdrop(event)) close() }}
       onCancel={event => { event.preventDefault(); if (!busy) close() }}>{children}</dialog>
+  }
+
+  function IssueDocuments({ project, id, reference, title, close }: IssueKey & { reference: string; title: string; close(): void }) {
+    const list = useRead<IssueDocumentList>('issueDocuments', { project, id })
+    const [selectedKey, select] = useState<string>()
+    const [collapsed, setCollapsed] = useState<string[]>([])
+    const keyOfDocument = (row: IssueDocument) => JSON.stringify([row.workspaceId, row.planId, row.type, row.version])
+    const rows = list.value?.documents ?? []
+    const selected = rows.find(row => keyOfDocument(row) === selectedKey) ?? rows[0]
+    const categories = ['research', 'proposal', 'execution', 'change', 'publication', 'completion'] as const
+    const directory = categories.map(type => rows.filter(row => row.type === type)).filter(group => group.length)
+    const multiplePlans = new Set(rows.map(row => JSON.stringify([row.workspaceId, row.planId]))).size > 1
+    const readingPane = useRef<HTMLElement>(null)
+    useEffect(() => { if (readingPane.current) readingPane.current.scrollTop = 0 }, [selected])
+    const document = useRead<IssueDocumentBody>('issueDocument', selected && {
+      project, id, workspaceId: selected.workspaceId, planId: selected.planId, type: selected.type, version: selected.version,
+    })
+    const snapshot = document.value
+    const preview = useMemo(() => {
+      if (!snapshot) return
+      if (snapshot.format === 'markdown') return { html: renderReport(snapshot.body) }
+      try {
+        const data = JSON.parse(snapshot.body)
+        const raw = JSON.stringify(data, null, 2)
+        if (selected?.type === 'publication' && typeof data.test?.body === 'string') {
+          return { html: renderReport(data.test.body), raw }
+        }
+        return { raw }
+      } catch { return { raw: snapshot.body } }
+    }, [snapshot, selected?.type])
+    return <Modal label="议题过程文档" className="dy-plan-report-dialog dy-issue-documents-dialog" busy={false} dismissOnBackdrop close={close}>
+      <header className="dy-plan-report-header"><h2>过程文档</h2>
+        <button type="button" onClick={close}>关闭</button></header>
+      <p className="dy-issue-documents-subject">{reference} · {title}</p>
+      <div className="dy-issue-documents-layout">
+        <nav className="dy-issue-documents-directory" aria-label="文档目录">
+          {list.error && <Problem error={list.error} retry={list.retry} />}
+          {!list.value && !list.error && <p role="status">正在读取过程文档…</p>}
+          {list.value?.errors.map(error => <Problem key={error} error={error} retry={list.retry} />)}
+          {list.value && !rows.length && !list.value.errors.length && <p>该议题暂无归档的过程文档。</p>}
+          {directory.map(group => {
+            const { type, title: groupTitle } = group[0]
+            const expanded = !collapsed.includes(type)
+            return <section key={type} className="dy-issue-documents-group">
+              <h3><button type="button" aria-expanded={expanded} onClick={() => setCollapsed(previous =>
+                expanded ? [...previous, type] : previous.filter(key => key !== type))}>
+                <svg className="dy-doc-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4" /></svg>
+                <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5V4h4l2 2h6v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5Z" /></svg>
+                <span>{groupTitle}</span>
+              </button></h3>
+              {expanded && <ul>{group.map(row => <li key={keyOfDocument(row)}>
+                <button type="button" aria-label={row.title + ' · v' + row.version + (multiplePlans ? ` · ${row.planName} · ${row.workspaceName}` : '')}
+                  aria-current={row === selected ? 'true' : undefined} onClick={() => select(keyOfDocument(row))}>
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h5L12 5.5v8H4zM9 2.5v3h3" /></svg>
+                  <span>v{row.version}{multiplePlans && <small>{row.planName} · {row.workspaceName}</small>}</span>
+                </button>
+              </li>)}</ul>}
+            </section>
+          })}
+        </nav>
+        <section ref={readingPane} className="dy-issue-documents-reader" aria-label="正文预览" tabIndex={0}>
+          {selected && <>
+            <h3>{selected.title} · v{selected.version}</h3>
+            <p className="dy-issue-documents-meta"><small>{selected.planName} · {selected.workspaceName} · {new Date(selected.time).toLocaleString('zh-CN')}</small></p>
+            {document.error && <Problem error={document.error} retry={document.retry} />}
+            {!snapshot && !document.error && <p role="status">正在读取正文…</p>}
+            {preview?.html && <article className="dy-sk-markdown" dangerouslySetInnerHTML={{ __html: preview.html }} />}
+            {preview?.raw && (preview.html ? <details><summary>查看回执和原始记录</summary><pre className="dy-issue-document-data">{preview.raw}</pre></details>
+              : <pre className="dy-issue-document-data">{preview.raw}</pre>)}
+          </>}
+        </section>
+      </div>
+    </Modal>
   }
 
   function Configure({ scope, plan, close, saved }: { scope: PlanKey; plan: Plan; close(): void; saved(): void }) {
@@ -163,10 +243,11 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </Modal>
   }
 
-  function IssueTable({ issues, remove, summaries, open, finalize, execute, executing, executionSupported, busy, unavailable, legacy, openSession }: {
+  function IssueTable({ issues, remove, archive, documents, summaries, open, finalize, execute, executing, executionSupported, busy, unavailable, legacy, closed, openSession }: {
     issues: PlanIssue[]; remove(issue: PlanIssue): void; summaries?: ResearchSummary[]; open(id: string): void
+    archive(issue: PlanIssue): void; documents(issue: PlanIssue): void
     finalize(row: ResearchSummary): void; execute(id: string, version: number): void; executing?: string; executionSupported?: boolean
-    busy: boolean; unavailable: boolean; legacy: boolean; openSession(id: string): void
+    busy: boolean; unavailable: boolean; legacy: boolean; closed: boolean; openSession(id: string): void
   }) {
     return <Table headers={['议题编号', '标题', '负责人', '云效状态', '方案状态', '操作']}>
       {issues.map(issue => {
@@ -174,51 +255,86 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
         const executionVersion = issue.executionVersion ?? (row?.label === '已定稿' ? row.version : undefined)
         return <tr key={issue.id}><td>{issue.url ? <a href={issue.url} target="_blank" rel="noreferrer">{issue.reference}</a> : issue.reference}</td>
         <td>{issue.error || issue.title || '—'}</td><td>{issue.owner || '—'}</td><td>{issue.state.name || '—'}</td>
-        <td>{summaries ? <div className="dy-plan-issue-actions"><Status label={row?.label || '未调研'} />{row?.progress && row.progress !== row.label && <Status label={row.progress} />}</div> : unavailable ? '状态不可用' : '读取中…'}</td>
+        <td>{summaries ? <div className="dy-plan-issue-actions"><Status label={row?.label || '未调研'} />{row?.progress && row.progress !== row.label && <Status label={row.progress} />}
+          {issue.executionStage && <Status label={{ dispatched: '已派发', ready: '小结待确认', confirmed: '小结已确认', submitted: '已登记提交' }[issue.executionStage]} />}
+        </div> : unavailable ? '状态不可用' : '读取中…'}</td>
         <td><div className="dy-plan-issue-actions">
+          <button type="button" className="dy-delivery-link" onClick={() => documents(issue)}>过程文档</button>
           {row && (row.version > 0 || row.label === '调研失败') && <button className="dy-delivery-link" onClick={() => open(issue.id)}>
             {row.version ? '查看 v' + row.version : '查看失败原因'}</button>}
           {row && <button className="dy-delivery-link" onClick={() => openSession(row.sessionId)}>查看调研会话</button>}
-          {row?.canFinalize && <button title={legacy ? '请在新版 DSH 工作台定稿' : undefined} disabled={busy || legacy} onClick={() => finalize(row)}>标记定稿</button>}
-          {issue.sessionId ? <button className="dy-delivery-link" onClick={() => openSession(issue.sessionId!)}>查看执行会话</button>
-            : executionVersion !== undefined && <button className="dy-yx-primary" disabled={busy || !executionSupported || Boolean(executing)}
+          {!closed && row?.canSubmit && <button disabled={busy} onClick={() => finalize(row)}>提交审核</button>}
+          {!closed && row?.canFinalize && <button title={legacy ? '请在新版 DSH 工作台定稿' : undefined} disabled={busy || legacy} onClick={() => finalize(row)}>标记定稿</button>}
+          {issue.sessionId && <button className="dy-delivery-link" onClick={() => openSession(issue.sessionId!)}>查看执行会话</button>}
+          {issue.sessionId && <button className="dy-delivery-link" onClick={() => archive(issue)}>归档执行成果</button>}
+          {!closed && executionVersion !== undefined && (!issue.sessionId || issue.dispatchedVersion !== executionVersion) && <button className="dy-yx-primary" disabled={busy || !executionSupported || Boolean(executing)}
               onClick={() => execute(issue.id, executionVersion)}>
               {executing === issue.id ? '正在派发…' : issue.executionVersion ? '重试执行 v' + issue.executionVersion : '开始执行'}
             </button>}
-          <button type="button" className="dy-delivery-link" aria-label={'移出计划 ' + issue.reference}
-          onClick={() => remove(issue)}>移出计划</button></div></td></tr>})}
+          {!closed && <button type="button" className="dy-delivery-link" aria-label={'移出计划 ' + issue.reference}
+            onClick={() => remove(issue)}>移出计划</button>}</div></td></tr>})}
       {!issues.length && <tr><td colSpan={6} className="dy-delivery-issue-empty">暂无计划议题</td></tr>}
     </Table>
   }
 
   function RemoveIssue({ scope, issue, close, removed }: {
-    scope: PlanKey; issue: PlanIssue; close(): void; removed(): void
+    scope: PlanKey; issue: PlanIssue; close(): void; removed(deferred: boolean): void
   }) {
     const [busy, setBusy] = useState(false)
     const [error, setError] = useState('')
+    const [reason, setReason] = useState('')
+    const [defer, setDefer] = useState(false)
     async function submit(event: ReactType.FormEvent) {
       event.preventDefault()
       if (busy) return
       setBusy(true)
       setError('')
       try {
-        await rpc('removeFromPlan', { ...scope, id: issue.id })
-        removed()
+        await rpc('removeFromPlan', { ...scope, id: issue.id, reason, defer })
+        removed(defer)
       } catch (failure) {
         setError(errorText(failure))
         setBusy(false)
       }
     }
-    return <Modal label="移出计划" busy={busy} close={close}>
-      <h2>移出计划</h2>
+    return <Modal label="调整议题范围" busy={busy} close={close}>
+      <h2>调整议题范围</h2>
       <p>{issue.reference} {issue.title}</p>
-      <p>云效状态将回退至「已确认」，计划开始时间将清空。负责人和计划完成时间保留。</p>
       <form onSubmit={submit}>
+        <label>处理方式<select value={defer ? 'defer' : 'remove'} onChange={event => setDefer(event.target.value === 'defer')}>
+          <option value="remove">移出计划</option><option value="defer">记录延期</option>
+        </select></label>
+        <p>{defer ? '议题仍在计划中，延期原因将写入范围历史。' : '云效状态将回退至「已确认」，计划开始时间将清空。负责人和计划完成时间保留。'}</p>
+        <label>原因<textarea rows={2} value={reason} maxLength={1000} required onChange={event => setReason(event.target.value)} /></label>
         {error && <Problem error={error} />}
         <div className="dy-yx-actions dy-delivery-footer">
           <button type="button" disabled={busy} onClick={close}>取消</button>
-          <button className="dy-yx-primary" disabled={busy}>{busy ? '正在同步云效…' : '确认移出'}</button>
+          <button className="dy-yx-primary" disabled={busy || !reason.trim()}>{busy ? '保存中…' : defer ? '记录延期' : '确认移出'}</button>
         </div>
+      </form>
+    </Modal>
+  }
+
+  function ArchiveExecution({ scope, issue, close, saved }: { scope: PlanKey; issue: PlanIssue; close(): void; saved(): void }) {
+    const [commit, setCommit] = useState('')
+    const [error, setError] = useState('')
+    const [busy, setBusy] = useState(false)
+    async function submit(event: ReactType.FormEvent) {
+      event.preventDefault()
+      setBusy(true); setError('')
+      try {
+        await rpc('archivePlanExecution', { ...scope, id: issue.id, ...(commit.trim() && { commit: commit.trim() }) })
+        saved()
+      } catch (failure) { setError(errorText(failure)) } finally { setBusy(false) }
+    }
+    return <Modal label="归档执行成果" busy={busy} close={close}>
+      <h2>归档执行成果</h2><p>{issue.reference} · {issue.title}</p>
+      <form onSubmit={submit}>
+        <p>确认执行会话中的小结后保存。已提交时，可同时关联带本议题编号的 Git 提交。</p>
+        <label>提交 SHA（可选）<input value={commit} spellCheck={false} onChange={event => setCommit(event.target.value)} /></label>
+        {error && <Problem error={error} />}
+        <div className="dy-yx-actions dy-delivery-footer"><button type="button" disabled={busy} onClick={close}>取消</button>
+          <button className="dy-yx-primary" disabled={busy}>{busy ? '保存中…' : '确认并归档'}</button></div>
       </form>
     </Modal>
   }
@@ -234,9 +350,31 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const [executionError, setExecutionError] = useState('')
     const [executionSessions, setExecutionSessions] = useState<Record<string, string>>({})
     const [removing, setRemoving] = useState<PlanIssue>()
+    const [archiving, setArchiving] = useState<PlanIssue>()
     const detail = result.value
+    const completion = useRead<Awaited<ReturnType<typeof workbenchCompletion>>>('planCompletion', detail?.plan.delivery?.mr ? scope : undefined, revision)
+    const report = completion.value?.latest
+    const [showReport, setShowReport] = useState(false)
+    const reportMarkdown = completion.value?.markdown
+    const reportHtml = useMemo(() => reportMarkdown && renderReport(reportMarkdown), [reportMarkdown])
+    const closed = report?.reportStatus === 'final'
+    const [reportAction, setReportAction] = useState<CompletionAction>()
+    const [reportNote, setReportNote] = useState('')
+    const [reportBusy, setReportBusy] = useState(false)
+    const [reportError, setReportError] = useState('')
+    async function saveReport(action: CompletionAction) {
+      setReportBusy(true); setReportError('')
+      try {
+        await rpc('updatePlanCompletion', { ...scope, action, note: reportNote })
+        setReportAction(undefined)
+        setReportNote('')
+        completion.retry()
+      } catch (failure) { setReportError(errorText(failure)) }
+      finally { setReportBusy(false) }
+    }
     const [answering, setAnswering] = useState(false)
     const [previewIssue, setPreviewIssue] = useState<string>()
+    const [documentIssue, setDocumentIssue] = useState<PlanIssue>()
     const [startingResearch, setStartingResearch] = useState(false)
     const [startError, setStartError] = useState('')
     const batch = useRead<{ batchId: string; rows: ResearchRow[] }>('planResearch', detail?.plan.members.length ? scope : undefined, revision)
@@ -287,9 +425,9 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     async function finalize(row: ResearchSummary) {
       setBusy(true)
       try {
-        const next = await rpc<ResearchSummary>('researchFinalize', { batchId, sessionId: row.sessionId, version: row.version })
+        const next = await rpc<ResearchSummary>(row.canSubmit ? 'researchSubmit' : 'researchFinalize', { batchId, sessionId: row.sessionId, version: row.version })
         setSummaries(old => old?.map(r => r.sessionId === next.sessionId ? next : r))
-        setNotice('已定稿 · v' + row.version)
+        setNotice((row.canSubmit ? '已送审' : '已定稿') + ' · v' + row.version)
       } catch (e) { setNotice(errorText(e)) } finally { setBusy(false) }
     }
     async function execute(id: string, version: number) {
@@ -327,7 +465,9 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           <button type="button" className="dy-delivery-link" onClick={back}><span aria-hidden="true">← </span>返回交付计划</button>
           <button type="button" onClick={result.retry}>刷新</button>
         </div>
+        {detail?.plan.goal && <p>{detail.plan.goal}</p>}
         <div className="dy-plan-title"><h2>{detail?.plan.name || '交付计划详情'}</h2>
+          {report?.reportStatus === 'final' && <Status label="计划已关闭" />}
           {detail && <Status label={planStatus(detail.plan, detail.mrStatus)} />}
         </div>
         {detail && <dl className="dy-plan-meta">
@@ -337,6 +477,9 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
         </dl>}
       </header>
       {result.error && <Problem error={result.error} retry={result.retry} />}
+      {detail?.archiveError && <Problem error={detail.archiveError} retry={() => {
+        void rpc('refreshPlanArchive', scope).then(result.retry, failure => setNotice(errorText(failure)))
+      }} />}
       {!detail && !result.error && <p role="status">正在读取交付计划…</p>}
       {notice && <p role="status" className="dy-yx-notice">{notice}</p>}
       {detail && <><section className="dy-delivery-card dy-delivery-section dy-plan-delivery" aria-label="交付分支">
@@ -359,24 +502,64 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           {detail.plan.baseBranch && <div><dt>基础分支</dt><dd>{detail.plan.baseBranch}</dd></div>}
           {detail.plan.kind && <div><dt>代码目录</dt><dd>{detail.plan.worktree || '主工作区'}</dd></div>}
         </dl>{detail.mrError && <Problem error={detail.mrError} retry={result.retry} />}
-      </section><section className="dy-delivery-card" aria-label="计划议题">
-        <div className="dy-delivery-section dy-plan-title"><h3>计划议题</h3><small>{detail.plan.members.length} 条</small><button disabled={!needsResearch || startingResearch} onClick={startResearch}>{startingResearch ? '正在派发…' : '方案调研'}</button>
-          <button disabled={!questionCount} onClick={() => setAnswering(true)}>批量答疑{questionCount > 0 && '（' + questionCount + '）'}</button></div>
+      </section>
+      {detail.plan.delivery?.mr && <section className="dy-delivery-card dy-delivery-section" aria-label="计划完成报告">
+        <div className="dy-yx-actions dy-plan-toolbar"><h3>计划完成报告</h3>
+          {report && <small>v{report.version} · {report.reportStatus === 'final' ? '终稿' : report.reportStatus === 'reviewed' ? '已审核' :
+            report.reportStatus === 'returned' ? '待返工' : '草稿'}</small>}</div>
+        {completion.error && <Problem error={completion.error} retry={completion.retry} />}
+        {reportHtml && <div className="dy-yx-actions"><button type="button" onClick={() => setShowReport(true)}>查看当前报告</button></div>}
+        {completion.value?.reports.length ? <details><summary>报告版本</summary><ul>
+          {completion.value.reports.map(version => <li key={version.version}>{version.file} · {new Date(version.time).toLocaleString()}</li>)}
+        </ul></details> : null}
+        {reportError && !reportAction && <Problem error={reportError} />}
+        {report?.reportStatus !== 'final' && <div className="dy-yx-actions">
+          <button disabled={reportBusy} onClick={() => void saveReport('draft')}>{report ? '按当前证据更新草稿' : '生成报告草稿'}</button>
+          {report?.reportStatus === 'draft' && <button disabled={reportBusy} onClick={() => setReportAction('reviewed')}>确认审核</button>}
+          {report && report.reportStatus !== 'returned' && <button disabled={reportBusy} onClick={() => setReportAction('returned')}>退回返工</button>}
+          {report?.reportStatus === 'reviewed' && detail.mrStatus === 'MERGED' && <button className="dy-yx-primary" disabled={reportBusy}
+            onClick={() => setReportAction('final')}>关闭计划并归档</button>}
+        </div>}
+      </section>}
+      {showReport && reportHtml && <Modal label="计划完成报告" className="dy-plan-report-dialog" busy={false} dismissOnBackdrop close={() => setShowReport(false)}>
+        <header className="dy-plan-report-header"><h2>计划完成报告</h2>
+          <button type="button" onClick={() => setShowReport(false)}>关闭</button></header>
+        <article className="dy-sk-markdown" dangerouslySetInnerHTML={{ __html: reportHtml }} />
+      </Modal>}
+      {reportAction && <Modal label="确认计划报告" busy={reportBusy} close={() => { setReportAction(undefined); setReportError(''); setReportNote('') }}>
+        <h2>{reportAction === 'final' ? '关闭计划并归档' : reportAction === 'reviewed' ? '确认报告审核' : '退回计划报告'}</h2>
+        <form onSubmit={event => { event.preventDefault(); void saveReport(reportAction) }}>
+          <label>{reportAction === 'final' ? '遗留事项及后续去向' : '审核意见'}<textarea value={reportNote} maxLength={5000} rows={3}
+            required={reportAction === 'returned'} onChange={event => setReportNote(event.target.value)} /></label>
+          {reportError && <Problem error={reportError} />}
+          <div className="dy-yx-actions dy-delivery-footer"><button className="dy-yx-primary" disabled={reportBusy}>{reportBusy ? '保存中…' : '确认'}</button></div>
+        </form>
+      </Modal>}
+      <section className="dy-delivery-card" aria-label="计划议题">
+        <div className="dy-delivery-section dy-plan-title"><h3>计划议题</h3><small>{detail.plan.members.length} 条</small><button disabled={closed || !needsResearch || startingResearch} onClick={startResearch}>{startingResearch ? '正在派发…' : '方案调研'}</button>
+          <button disabled={closed || !questionCount} onClick={() => setAnswering(true)}>批量答疑{questionCount > 0 && '（' + questionCount + '）'}</button></div>
         {(batch.error || summaryError) && <Problem error={batch.error || summaryError!} retry={batch.retry} />}
         {startError && <Problem error={startError} retry={startResearch} />}
         {executionError && <Problem error={executionError} />}
         {executionUnavailable && <p role="status" className="dy-yx-notice">请更新研发工作台插件并重启 DSH，再开始执行。</p>}
         <IssueTable openSession={openSession} issues={detail.issues.map(issue => ({ ...issue, sessionId: executionSessions[issue.id] ?? issue.sessionId }))}
-          execute={execute} executing={executing} executionSupported={detail.executionSupported} remove={setRemoving} summaries={summaries}
-          busy={busy} unavailable={!!(summaryError || batch.error)} legacy={legacy} open={setPreviewIssue} finalize={finalize} /></section>
+          execute={execute} executing={executing} executionSupported={detail.executionSupported} remove={setRemoving} archive={setArchiving} documents={setDocumentIssue} summaries={summaries}
+          busy={busy} unavailable={!!(summaryError || batch.error)} legacy={legacy} closed={closed} open={setPreviewIssue} finalize={finalize} /></section>
       {previewIssue && researchPlan && <Modal label="方案预览" drawer dismissOnBackdrop busy={false} close={() => setPreviewIssue(undefined)}>
         <header><h2>方案预览</h2><button onClick={() => setPreviewIssue(undefined)}>关闭</button></header>
         <PlanResearch initialIssue={previewIssue} workspaceId={scope.workspaceId} openSession={openSession}
           plan={researchPlan} close={() => setPreviewIssue(undefined)} />
       </Modal>}
-      {removing && <RemoveIssue scope={scope} issue={removing} close={() => setRemoving(undefined)} removed={() => {
-        setNotice('已移出计划 · ' + removing.reference)
+      {documentIssue && <IssueDocuments project={scope.project} id={documentIssue.id} reference={documentIssue.reference}
+        title={documentIssue.title} close={() => setDocumentIssue(undefined)} />}
+      {removing && <RemoveIssue scope={scope} issue={removing} close={() => setRemoving(undefined)} removed={deferred => {
+        setNotice((deferred ? '已记录延期 · ' : '已移出计划 · ') + removing.reference)
         setRemoving(undefined)
+        changed()
+      }} />}
+      {archiving && <ArchiveExecution scope={scope} issue={archiving} close={() => setArchiving(undefined)} saved={() => {
+        setNotice('已归档 · ' + archiving.reference)
+        setArchiving(undefined)
         changed()
       }} />}
       {modal === 'configure' && <Configure scope={scope} plan={detail.plan} close={() => setModal(undefined)} saved={done} />}
@@ -622,11 +805,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     const review = value?.review
     const comment = value?.comment
     const selected = value?.sources.find(row => row.id === source) ?? value?.sources[0]
-    const report = useMemo(() => review?.markdown && DOMPurify.sanitize(marked.parse(review.markdown, { async: false }), {
-      ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'strong', 'em', 'ul', 'ol', 'li', 'code', 'pre', 'blockquote',
-        'table', 'thead', 'tbody', 'tr', 'th', 'td', 'hr', 'br'],
-      ALLOWED_ATTR: [],
-    }), [review?.markdown])
+    const report = useMemo(() => review?.markdown && renderReport(review.markdown), [review?.markdown])
 
     useEffect(() => {
       const abort = new AbortController()
@@ -758,5 +937,5 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </Modal>
   }
 
-  return { Plans, Requests, RequestDetail }
+  return { Plans, Requests, RequestDetail, IssueDocuments }
 }

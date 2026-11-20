@@ -41,20 +41,33 @@ export type MrReviewView = {
 }
 export type PlanDelivery = { key: string; repositoryId: number; path: string; target: string; mr?: MrRef }
 export type PlanKind = 'feature' | 'fix' | 'patch' | 'project' | 'hotfix'
+export type PlanHistory = {
+  createdAt?: string; initialMembers?: string[]
+  changes: { id: string; issueId: string; kind: 'initial' | 'added' | 'removed' | 'deferred'; at: string; reason: string }[]
+}
 export type Plan = {
   id: string; name: string; branch: string; end: string; members: string[]; repositoryKey?: string; delivery?: PlanDelivery
   kind?: PlanKind; version?: string; baseBranch?: string; targetBranch?: string; worktree?: string
+  goal?: string; history?: PlanHistory; archiveError?: string; revision?: number
 }
-export type PlanCreate = Pick<Plan, 'name' | 'branch' | 'end'> & {
+export type PlanCreate = Pick<Plan, 'name' | 'branch' | 'end' | 'goal'> & {
   kind: PlanKind; version: string; baseBranch: string; targetBranch: string; useExistingRemote: boolean; worktreeDir?: string
 }
 export type PlanBranchCheck = { localExists: boolean; remoteExists: boolean }
 export type PlanKey = { project: string; workspaceId: string; planId: string }
 export type PlanRow = PlanKey & { plan: Plan; projectName: string; workspaceName: string; mrStatus?: string }
-export type PlanIssue = Pick<Issue, 'id' | 'reference' | 'title' | 'owner' | 'state' | 'url' | 'sessionId'> & { error?: string; executionVersion?: number }
+export type PlanIssue = Pick<Issue, 'id' | 'reference' | 'title' | 'owner' | 'state' | 'url' | 'sessionId'> & {
+  error?: string; executionVersion?: number; dispatchedVersion?: number; executionStage?: 'dispatched' | 'ready' | 'confirmed' | 'submitted' }
 export type MrCandidate = { localId: number; title: string; target: string; url: string }
-export type PlanDetails = { plan: Plan; issues: PlanIssue[]; mrStatus?: string; candidates: MrCandidate[]; mrError?: string; executionSupported?: boolean }
-export type Preview = { code: string; sections: string[]; receipts: ({ id: string; time: string } | null)[]; error?: string }
+export type PlanDetails = { plan: Plan; issues: PlanIssue[]; mrStatus?: string; candidates: MrCandidate[]; mrError?: string;
+  archiveError?: string; executionSupported?: boolean }
+export type Preview = { code: string; sections: string[]; receipts: ({ id: string; time: string } | null)[];
+  confirmed?: boolean; archivePending?: boolean; history?: { body: string; receipt: { id: string; time: string } }[]; error?: string }
 export type PlanResult = { id: string; result: string; error?: string; retryable?: boolean }
+export type IssueDocumentType = 'research' | 'proposal' | 'execution' | 'change' | 'publication' | 'completion'
+export type IssueDocumentKey = { workspaceId: string; planId: string; type: IssueDocumentType; version: number }
+export type IssueDocument = IssueDocumentKey & { workspaceName: string; planName: string; title: string; time: string }
+export type IssueDocuments = { documents: IssueDocument[]; errors: string[] }
+export type IssueDocumentBody = { format: 'markdown' | 'json'; body: string }
 
 export type ConnectionSettings = { hasToken: boolean; source: 'saved' | 'env' | 'none'; organization: string; project: string }

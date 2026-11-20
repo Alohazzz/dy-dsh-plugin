@@ -89,7 +89,7 @@ function sessionPaths(agent, home) {
   }
 }
 
-function discussionSections(markdown) {
+function discussionSections(markdown, testOnly = false) {
   const sections = new Map()
   let current
   let fence
@@ -100,7 +100,7 @@ function discussionSections(markdown) {
       line.trim() === marker) fence = undefined
     else if (!fence && /^#{1,2}\s+/.test(line)) {
       const heading = /^##\s+(.+?)\s*#*\s*$/.exec(line)?.[1]
-      const title = heading === '修改方案汇总' ? heading :
+      const title = heading === '修改方案汇总' && !testOnly ? heading :
         /^(影响范围与测试)(?:[（(]测试向[）)])?$/.exec(heading)?.[1]
       current = title ? [] : undefined
       if (title) {
@@ -111,7 +111,7 @@ function discussionSections(markdown) {
     }
     current?.push(line)
   }
-  return ['修改方案汇总', '影响范围与测试'].map(title => {
+  return (testOnly ? ['影响范围与测试'] : ['修改方案汇总', '影响范围与测试']).map(title => {
     const content = sections.get(title)?.join('\n').trim()
     if (!content) throw new Error(`discussion.md 缺少「${title}」正文`)
     return `## ${title}\n\n${content}`
@@ -194,7 +194,7 @@ export function createHandler({
         if (action === 'preview') {
           const pending = preview.sections.map((section, index) => preview.receipts[index]
             ? `已发布 ${preview.receipts[index].id}\n${section}` : section)
-          return success(`${binding.reference} 的两条评论\n\n${pending.join('\n\n---\n\n')}\n\n确认发布：/yunxiao publish ${preview.code}`)
+          return success(`${binding.reference} 的测试评论\n\n${pending.join('\n\n---\n\n')}\n\n确认发布：/yunxiao publish ${preview.code}`)
         }
         const result = await publication.publish(cwd, binding, arg, preview.sections)
         if (result.error) return { kind: 'error', text: result.error }
@@ -205,13 +205,13 @@ export function createHandler({
           if (error.code === 'ENOENT') throw new Error(`尚未生成 ${paths.discussion}`)
           throw error
         })
-        const sections = discussionSections(markdown)
+        const sections = discussionSections(markdown, true)
         if (sections.some(section => Array.from(section).length > 19_800)) {
           throw new Error('单条评论内容过长，请缩短 discussion.md 后重新预览')
         }
         const code = digest('publish', agent.session.id, binding, sections).slice(0, 16)
         if (action === 'preview') {
-          return success(`${binding.reference} 的两条评论\n\n${sections.join('\n\n---\n\n')}\n\n确认发布：/yunxiao publish ${code}`)
+          return success(`${binding.reference} 的测试评论\n\n${sections.join('\n\n---\n\n')}\n\n确认发布：/yunxiao publish ${code}`)
         }
         if (arg !== code) throw new Error('预览码不匹配，请重新预览当前内容')
         const ids = []

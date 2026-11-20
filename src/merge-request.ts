@@ -179,7 +179,7 @@ export async function mrPreview(root: string, key: string, api: Api, worktree?: 
 }
 
 export type MrInput = { workspaceId: string; key: string; repositoryId: number; branch: string; sha: string; remoteSha: string;
-  target: string; title: string; description: string; needPush: boolean }
+  target: string; title: string; description: string; needPush: boolean; reviewerUserIds?: string[] }
 const pending = new Set<string>()
 export async function submitMr(root: string, input: MrInput, api: Api, worktree?: string) {
   const dir = worktree ?? await workspaceRepository(root, input.key)
@@ -188,6 +188,8 @@ export async function submitMr(root: string, input: MrInput, api: Api, worktree?
   pending.add(lock)
   let pushed = false
   try {
+    if (input.reviewerUserIds !== undefined && (!Array.isArray(input.reviewerUserIds) ||
+      input.reviewerUserIds.some(id => typeof id !== 'string' || !id.trim()))) throw new Error('审核人 ID 无效')
     if (!input.title?.trim() || input.title.length > 256 || typeof input.description !== 'string' || input.description.length > 10000)
       throw new Error('请填写有效标题（最多 256 字）和描述（最多 10000 字）')
     const { preview: p, refs, pushUrl, readUrl } = await inspect(dir, api)
@@ -195,6 +197,11 @@ export async function submitMr(root: string, input: MrInput, api: Api, worktree?
       throw new Error('仓库、分支或提交已变化，请刷新后重新确认')
     const already = (await api.openForSource(p.repository.id, p.branch)).find(mr => mr.target === input.target)
     if (already) return { ...already, existing: true, pushed }
+    if (input.reviewerUserIds?.length) {
+      const eligible = await api.reviewerCandidates(p.repository.id, input.target)
+      const ids = new Set(eligible.map(user => user.id))
+      if (input.reviewerUserIds.some(id => !ids.has(id))) throw new Error('所选审核人缺少目标分支合并权限，请重新选择')
+    }
     if (p.blocked) throw new Error(p.blocked)
     if (p.needPush && (input.needPush !== true || input.remoteSha !== p.remoteSha)) throw new Error('远端源分支已变化，请刷新后重新确认推送')
     const targetSha = refs.get(input.target)!
@@ -208,7 +215,7 @@ export async function submitMr(root: string, input: MrInput, api: Api, worktree?
     }
     const confirmed = await git(dir, ['ls-remote', '--heads', '--', readUrl, 'refs/heads/' + p.branch])
     if (confirmed.split(/\s+/)[0] !== p.sha) throw new Error('远端提交已变化，请刷新核对')
-    const created = await api.create(p.repository.id, p.branch, input.target, input.title.trim(), input.description)
+    const created = await api.create(p.repository.id, p.branch, input.target, input.title.trim(), input.description, input.reviewerUserIds)
     return { ...created, existing: false, pushed }
   } catch (error) {
     throw new Error((pushed ? '源分支已推送。' : '') + (error instanceof Error ? error.message : '创建失败') + '。重试时将先核对已有 MR。')

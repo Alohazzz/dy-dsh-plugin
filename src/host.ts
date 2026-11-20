@@ -1,10 +1,14 @@
 import { planWritingInstructions, writingSkill } from './writing-skill.mjs'
+import { documentInstructions, workbenchWritingSkill } from './workbench-documents.mjs'
+import { archiveIndex, archiveScope, assertOpenPlan, listIssueArchiveDocuments, readIssueArchiveDocument, savePlanArchive, searchedArchive } from './workbench-archive.ts'
+import { saveCompletion, workbenchCompletion, type CompletionAction } from './workbench-completion.ts'
 import { researchSkill } from './research-skill.ts'
 import { deliveryOptions, git, mrPreview, mrRepos, submitMr, workspaceRepository, type MrInput } from './merge-request.ts'
 import { createMrReviews, reviewSessionPrefix } from './mr-review.ts'
 import { availableMrActions, createMrActions } from './mr-actions.ts'
 import { issueMaterials } from './issue-materials.ts'
 import { createResearch } from './research-prototype.ts'
+import { existsSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -12,7 +16,7 @@ import { checkPlanBranch, planWorktree } from './plan-git.ts'
 import { createConnectionSettings, type CredentialStore } from './connection-settings.ts'
 import { createHandler, descriptionOf, digest } from './yunxiao.mjs'
 import { createWorkflow, executionSkill, label, projectOf } from './workflow.ts'
-import type { Details, Issue, IssueKey, Meta, MrRef, Option, Plan, PlanCreate, PlanDetails, PlanKey, PlanRow, Search } from './contracts.ts'
+import type { Details, Issue, IssueDocumentKey, IssueDocuments, IssueKey, Meta, MrRef, Option, Plan, PlanCreate, PlanDetails, PlanKey, PlanRow, Search } from './contracts.ts'
 import { createSkillSources } from './skill-sources.ts'
 import { createSkillInstallations, skillProjectRoot } from './skill-installations.ts'
 import { dshSkillTarget, type SkillSourceInput, type SkillTarget } from './skill-catalog.ts'
@@ -112,9 +116,9 @@ export function apply(ctx: Context) {
     'MR 只读审查会话禁用工具，仅使用宿主提供的 Git 证据。' : undefined)
   ctx.inject(['skills'], scope => {
     scope.skills.register(writingSkill)
-    for (const skill of [executionSkill, researchSkill]) {
-      scope.skills.register({ ...skill, content: skill.content + '\n\n' + planWritingInstructions })
-    }
+    scope.skills.register(workbenchWritingSkill)
+    scope.skills.register({ ...executionSkill, content: executionSkill.content + '\n\n' + documentInstructions('execution', 'publication') })
+    scope.skills.register({ ...researchSkill, content: researchSkill.content + '\n\n' + planWritingInstructions })
     scope.skills.registerProvider(installations.provider)
   })
   async function hasSessionSkill(sessionId: string, name: string) {
@@ -255,13 +259,13 @@ export function apply(ctx: Context) {
     const item = await api.get(input.id)
     if (projectOf(item) && projectOf(item) !== input.project) throw new Error('议题不属于当前云效项目')
     const root = input.workspaceId ? workspace(input.workspaceId).path : undefined
-    const [binding, plans, materials, transition] = await Promise.all([
-      root ? workflow.bindingFor(root, input, api.organization) : null,
+    const [plans, materials, transition] = await Promise.all([
       root ? workflow.plans(root, input.project, api.organization) : [],
       issueMaterials(api, item.id, descriptionOf(item)),
       workflow.pendingTransition(input, api),
     ])
     const plan = plans.find(plan => plan.members.includes(input.id))
+    const binding = root ? await workflow.bindingFor(root, { ...input, planId: plan?.id }, api.organization) : null
     return { ...summarize(item, input.project), ...materials, plan: plan?.name, planId: plan?.id,
       sessionId: binding?.dispatched ? binding.sessionId : undefined, pendingTarget: transition?.target }
   }
@@ -310,28 +314,46 @@ export function apply(ctx: Context) {
         return { candidates: [], mrError: error instanceof Error ? error.message : String(error) }
       }
     }
+    const archive = await archiveIndex(reportScope(api, input)).then(index => ({
+      plan: index.plans.find(entry => entry.id === plan.id), error: undefined,
+    }), error => ({ plan: undefined, error: error instanceof Error ? error.message : String(error) }))
     const [issues, state] = await Promise.all([inBatches(plan.members, async id => {
       try {
         const item = await api.get(id)
         if (projectOf(item) && projectOf(item) !== input.project) throw new Error('议题不属于当前云效项目')
-        const binding = await workflow.bindingFor(planDirectory(input), { project: input.project, id }, api.organization)
+        const binding = await workflow.bindingFor(planDirectory(input), { project: input.project, planId: plan.id, id }, api.organization)
         return { ...summarize(item, input.project), sessionId: binding?.dispatched ? binding.sessionId : undefined,
+          dispatchedVersion: binding?.dispatched ? binding.planVersion : undefined,
+          executionStage: binding?.dispatched ? await workflow.executionProgress(binding,
+            archive.plan?.issues.find(issue => issue.id === id)?.documents ?? []) : undefined,
           executionVersion: !binding?.dispatched && binding?.planId === plan.id ? binding.planVersion : undefined }
       } catch {
         return { id, reference: id, title: '', owner: '', state: { id: '', name: '' }, url: '', error: '议题读取失败' }
       }
     }), mrState()])
-    return { plan, issues, ...state, executionSupported: true }
+    return { plan, issues, ...state, archiveError: archive.error, executionSupported: true }
   }
 
-  const research = createResearch(ctx.sessionController, join(home, 'research'), hasSessionSkill)
-  const researchBatch = (organization: string, input: PlanKey) =>
-    digest(JSON.stringify([organization, input.workspaceId, input.project, input.planId]))
+  const researchDirectory = join(home, 'research')
+  const research = createResearch(ctx.sessionController, researchDirectory, hasSessionSkill)
+  function researchBatch(organization: string, input: PlanKey) {
+    const current = digest(JSON.stringify([organization, realpathSync(planDirectory(input)), input.project, input.planId]))
+    const legacy = digest(JSON.stringify([organization, input.workspaceId, input.project, input.planId]))
+    return !existsSync(join(researchDirectory, current + '.json')) && existsSync(join(researchDirectory, legacy + '.json'))
+      ? legacy : current
+  }
   async function planCheckout(input: PlanKey, plan: Plan) {
     const key = plan.repositoryKey || plan.delivery?.key
     const root = planDirectory(input)
     const repo = key ? await workspaceRepository(root, key) : root
     return plan.worktree ? planWorktree(repo, plan.worktree) : repo
+  }
+  const reviewActor = () => settings.client().then(api => api.currentUser()).then(user => user.name || String(user.id), () => undefined)
+  const reportScope = (api: Client, input: PlanKey) => archiveScope(planDirectory(input), api.organization, input.project, input.planId)
+  async function draftCompletion(api: Client, input: PlanKey) {
+    const scope = reportScope(api, input)
+    return workflow.withPlan(scope.root, scope.project, scope.organization, scope.planId,
+      plan => saveCompletion(scope, plan, api, 'draft'))
   }
 
   const methods = {
@@ -342,10 +364,21 @@ export function apply(ctx: Context) {
       const rows = research.status({ batchId }).filter(row => row.issueId && plan.members.includes(row.issueId))
       if (!input.start) return { batchId, rows }
       const cwd = await planCheckout(input, plan)
+      const scope = archiveScope(realpathSync(planDirectory(input)), api.organization, input.project, plan.id)
+      await assertOpenPlan(scope)
+      await savePlanArchive(scope, plan)
       const missing = plan.members.filter(id => !rows.some(r => r.issueId === id && (r.status !== 'failed' || r.drafts.length)))
       const inputs = await inBatches(missing, async id => {
         const item = await detail({ ...input, id })
-        return { id, title: item.reference + ' ' + item.title, text: [item.text, item.materialsError].filter(Boolean).join('\n') }
+        const keywords = [...new Intl.Segmenter('zh', { granularity: 'word' }).segment(item.title)]
+          .filter(word => word.isWordLike && word.segment.length > 1).slice(0, 10).map(word => word.segment)
+        const hints = await searchedArchive(scope, [id, item.reference, item.product, item.title, ...keywords])
+        return { id, title: item.reference + ' ' + item.title,
+          text: [item.text, item.materialsError,
+            '历史档案索引（按当前项目查找，若无相关材料请记录缺口）：' + JSON.stringify(hints)].filter(Boolean).join('\n'),
+          archive: { scope, issue: { id, reference: item.reference, title: item.title, module: item.product },
+            historicalPaths: hints.map(hint => hint.path), participation: plan.history?.changes.findLast(change =>
+              change.issueId === id && ['initial', 'added'].includes(change.kind))?.id } }
       })
       research.start(cwd, inputs, batchId)
       return { batchId, rows: research.status({ batchId }).filter(row => row.issueId && plan.members.includes(row.issueId)) }
@@ -356,15 +389,72 @@ export function apply(ctx: Context) {
         if (await git(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'], true) !== plan.branch) {
           throw new Error('请在计划的代码目录检出源分支「' + plan.branch + '」后再执行')
         }
-        return { cwd, version: input.version,
+        const researchRow = research.status({ batchId: researchBatch(organization, input) }).find(row => row.issueId === input.id)
+        return { cwd, version: input.version, approvedProposalVersion: researchRow?.drafts[input.version - 1]?.proposalVersion,
           readDraft: () => research.finalizedDraft(researchBatch(organization, input), input.id, input.version) }
       })
       return { sessionId: binding.sessionId }
     },
+    archivePlanExecution(input: PlanKey & { id: string; commit?: string }) {
+      return workflow.archiveExecution(planDirectory(input), input)
+    },
     researchStatus: research.status,
     researchSummaries: research.summaries,
-    researchFinalize: research.finalize,
-    researchRevise: research.revise,
+    async researchSubmit(input: Parameters<typeof research.submit>[0]) {
+      const result = research.submit({ ...input, actor: await reviewActor() })
+      await research.archiveReviews(input.batchId, input.sessionId)
+      return result
+    },
+    async researchFinalize(input: Parameters<typeof research.finalize>[0]) {
+      const result = research.finalize({ ...input, actor: await reviewActor() })
+      await research.archiveReviews(input.batchId, input.sessionId)
+      return result
+    },
+    async researchRevise(input: Parameters<typeof research.revise>[0]) {
+      const result = research.revise({ ...input, actor: await reviewActor() })
+      await research.archiveReviews(input.batchId, input.sessionId)
+      return result
+    },
+    async searchWorkbenchArchive(input: { project: string; workspaceId: string; query: string }) {
+      const api = await settings.client()
+      if (typeof input.query !== 'string' || !input.query.trim() || input.query.length > 200) throw new Error('请输入档案检索关键词')
+      return searchedArchive({ root: workspace(input.workspaceId).path, organization: api.organization, project: input.project },
+        input.query.split(/\s+/))
+    },
+    async issueDocuments(input: IssueKey): Promise<IssueDocuments> {
+      const api = await settings.client()
+      const workspaces = ctx.workspaceRegistry.list()
+      const groups = await inBatches(workspaces, async target => {
+        try {
+          const documents = await listIssueArchiveDocuments({ root: target.path, organization: api.organization, project: input.project }, input.id)
+          return { documents: documents.map(document => ({ ...document, workspaceId: target.id, workspaceName: target.title })) }
+        } catch (error) {
+          return { documents: [], error: `${target.title} · ${error instanceof Error ? error.message : String(error)}` }
+        }
+      })
+      return {
+        documents: groups.flatMap(group => group.documents).sort((a, b) => b.time.localeCompare(a.time) || b.version - a.version),
+        errors: groups.flatMap(group => group.error ? [group.error] : []),
+      }
+    },
+    async issueDocument(input: IssueKey & IssueDocumentKey) {
+      const api = await settings.client()
+      return readIssueArchiveDocument(reportScope(api, input), input.id, input)
+    },
+    async planCompletion(input: PlanKey) {
+      return workbenchCompletion(reportScope(await settings.client(), input))
+    },
+    async refreshPlanArchive(input: PlanKey) {
+      const api = await settings.client()
+      await savePlanArchive(reportScope(api, input), await readPlan(api, input))
+      return { saved: true }
+    },
+    async updatePlanCompletion(input: PlanKey & { action: CompletionAction; note?: string }) {
+      const api = await settings.client()
+      const scope = reportScope(api, input)
+      return workflow.withPlan(scope.root, scope.project, scope.organization, scope.planId, plan =>
+        saveCompletion(scope, plan, api, input.action, typeof input.note === 'string' ? input.note.slice(0, 5000) : ''))
+    },
     pullMrSnapshot: reviews.pull,
     cancelMrSnapshotPull: reviews.cancelPull,
     startMrReview: reviews.start,
@@ -382,6 +472,9 @@ export function apply(ctx: Context) {
       const plan = await readPlan(api, input)
       const { key } = requireDelivery(plan)
       return mrPreview(planDirectory(input), key, api.codeup, await deliveryWorktree(input, plan, key))
+    },
+    async mrReviewerCandidates({ repositoryId, target }: { repositoryId: number; target: string }) {
+      return (await settings.client()).codeup.reviewerCandidates(repositoryId, target)
     },
     async submitMr(input: MrInput) {
       return submitMr(workspace(input.workspaceId).path, input, (await settings.client()).codeup)
@@ -415,7 +508,7 @@ export function apply(ctx: Context) {
     },
     async linkPlanMr(input: PlanKey & MrRef) {
       const api = await settings.client()
-      return updateDelivery(api, input, async plan => {
+      const result = await updateDelivery(api, input, async plan => {
         const delivery = requireDelivery(plan)
         if (delivery.repositoryId !== input.repositoryId) throw new Error('计划仓库已变化，请刷新')
         if (delivery.mr?.localId === input.localId) return delivery
@@ -426,6 +519,9 @@ export function apply(ctx: Context) {
         }
         return { ...delivery, mr: { repositoryId: delivery.repositoryId, localId: input.localId } }
       })
+      try { await draftCompletion(api, input) }
+      catch (error) { return { ...result, reportError: error instanceof Error ? error.message : String(error) } }
+      return result
     },
     async submitPlanMr(input: PlanKey & MrInput) {
       const api = await settings.client()
@@ -438,6 +534,8 @@ export function apply(ctx: Context) {
         const result = await submitMr(planDirectory(input), input, api.codeup, directory)
         return { ...binding, mr: { repositoryId: binding.repositoryId, localId: result.localId } }
       })
+      try { await draftCompletion(api, input) }
+      catch (error) { return { ...delivery.mr!, reportError: error instanceof Error ? error.message : String(error) } }
       return delivery.mr!
     },
     async workbenchMrs(input: { queue: 'mine' | 'review' | 'all'; page: number; repository: string }) {
@@ -514,10 +612,10 @@ export function apply(ctx: Context) {
         .map(item => typeof item === 'string' ? item : label(item)).filter(Boolean)
       return { statuses: options(values.statuses), versions: options(values.versions), products: [...new Set<string>(products)] }
     },
-    preview(input: IssueKey & { workspaceId: string; regenerate?: boolean }) {
+    preview(input: IssueKey & { workspaceId: string; planId?: string; regenerate?: boolean }) {
       return workflow.preview(workspace(input.workspaceId).path, input, input.regenerate)
     },
-    publish(input: IssueKey & { workspaceId: string; code: string; sections: string[] }) {
+    publish(input: IssueKey & { workspaceId: string; planId?: string; code: string; sections: string[] }) {
       return workflow.publish(workspace(input.workspaceId).path, input, input.code, input.sections)
     },
     async statuses(input: IssueKey) {
@@ -546,18 +644,22 @@ export function apply(ctx: Context) {
       return checkPlanBranch(directory, input.branch.trim())
     },
     async createPlan(input: { project: string; workspaceId: string; repositoryKey?: string } &
-      (PlanCreate | Pick<Plan, 'name' | 'branch' | 'end'>)) {
+      (PlanCreate | Pick<Plan, 'name' | 'branch' | 'end' | 'goal'>)) {
       const cwd = workspace(input.workspaceId).path
       const key = input.repositoryKey || ('kind' in input ? '.' : '')
       const repository = key ? { key, directory: await workspaceRepository(cwd, key) } : undefined
       return workflow.createPlan(cwd, input.project, input, repository)
     },
-    addToPlan(input: { project: string; workspaceId: string; planId: string; ids: string[] }) {
+    addToPlan(input: PlanKey & { ids: string[]; reason?: string; initial?: boolean }) {
       if (!Array.isArray(input.ids) || !input.ids.length || input.ids.length > 100) throw new Error('每批可选 1 到 100 条议题')
-      return workflow.addToPlan(workspace(input.workspaceId).path, input.project, input.planId, input.ids)
+      return workflow.addToPlan(workspace(input.workspaceId).path, input.project, input.planId, input.ids,
+        typeof input.reason === 'string' ? input.reason.slice(0, 1000) : '', input.initial === true)
     },
-    async removeFromPlan(input: PlanKey & { id: string }) {
-      await workflow.removeFromPlan(workspace(input.workspaceId).path, input.project, input.planId, input.id)
+    async removeFromPlan(input: PlanKey & { id: string; reason?: string; defer?: boolean }) {
+      const api = await settings.client()
+      await workflow.removeFromPlan(workspace(input.workspaceId).path, input.project, input.planId, input.id,
+        typeof input.reason === 'string' ? input.reason.slice(0, 1000) : '', input.defer === true)
+      if (!input.defer) research.retire(researchBatch(api.organization, input), input.id)
       return { removed: true }
     },
   }
