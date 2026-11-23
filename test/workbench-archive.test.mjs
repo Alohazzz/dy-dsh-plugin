@@ -29,9 +29,9 @@ test('目录名可读且展示名修改后路径稳定，旧档案可直接读�
   await savePlanArchive(scope, plan(scope.planId, '第一批交付'))
   const first = await saveArchiveDocument(scope, issue, 'research', 'event-1', {}, markdown('research'))
   const index = await archiveIndex(scope)
-  assert.match(index.folder, /^docs\/workbench\/诊疗-工作台--[a-f0-9]{12}$/)
-  assert.match(index.plans[0].folder, /^plans\/第一批交付--[a-f0-9]{12}$/)
-  assert.match(index.plans[0].issues[0].folder, /issues\/DEMO-32-测试回写--[a-f0-9]{12}$/)
+  assert.match(index.folder, /^docs\/workbench\/诊疗-工作台$/)
+  assert.match(index.plans[0].folder, /^plans\/第一批交付$/)
+  assert.match(index.plans[0].issues[0].folder, /issues\/DEMO-32-测试回写$/)
   assert.equal(first.file, '调研报告-v1.md')
   const renamed = { ...scope, projectName: '新项目名' }
   await savePlanArchive(renamed, plan(scope.planId, '新计划名'))
@@ -60,6 +60,9 @@ test('目录名可读且展示名修改后路径稳定，旧档案可直接读�
 test('模板校验拒绝缺字段、空正文、重复和错序，代码围栏内标题保留', () => {
   const fields = { projectId: 'p', planId: 'a', issueId: issue.id, documentVersion: 1 }
   const body = markdown('research')
+  let index = 0
+  const numbered = body.replace(/^## /gm, () => '## ' + '一二三四五六七'[index++] + '、')
+  assert.equal(validatedDocument('research', 'report.md', fields, numbered).templateVersion, 1)
   assert.throws(() => validatedDocument('research', 'report.md', {}, body), /report\.md.*projectId/)
   assert.throws(() => validatedDocument('research', 'report.md', fields, body.replace('\n\n使用模拟数据验证', '')), /正文为空/)
   assert.throws(() => validatedDocument('research', 'report.md', fields, body + '\n\n## 业务背景与范围\n\n重复'), /重复/)
@@ -73,9 +76,9 @@ test('收取缺少草稿标识的回复时，以 DSH 的请求归属为准', asy
   const scope = archiveScope(root, 'org', 'project', 'plan')
   await savePlanArchive(scope, plan(scope.planId, '调研归档'))
   const report = markdown('research')
-  const text = ['```json', JSON.stringify({ report, questions: [
+  const text = ['~~~~JSON', JSON.stringify({ report, questions: [
     { question: '如何验收？', recommended: '复测回显', alternatives: [] },
-  ], proposal: '', decisions: [] }), '```'].join('\n')
+  ], proposal: '', decisions: [] }), '~~~~'].join('\n')
   const record = (seq, type, data) => ({ event: { seq, type, data } })
 
   for (const mixed of [false, true]) {
@@ -193,7 +196,7 @@ test('A 的延迟调研写回原项目，重启可兼容旧材料并重建索引
   const first = await settle()
   const text = prompt.content[0].text
   for (const type of ['research', 'proposal']) {
-    assert.ok(text.includes(templateFor(type).sections.join('、')))
+    assert.ok(text.includes(templateFor(type).sections.map(name => '## ' + name).join('\n')))
   }
   assert.match(text, /DRAFT-/)
   assert.doesNotMatch(text, /## 执行及交付|规则优先级|编辑流程/)

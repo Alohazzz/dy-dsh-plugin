@@ -1,6 +1,6 @@
-import { link, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { link, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
-import { join, relative, sep } from 'node:path'
+import { basename, join, relative, sep } from 'node:path'
 import { stringify } from 'yaml'
 import type { IssueDocumentBody, IssueDocumentKey, Plan } from './contracts.ts'
 import { atomicJson, digest, readJson } from './yunxiao.mjs'
@@ -55,20 +55,28 @@ async function writeNew(path: string, text: string) {
   }
 }
 
-const shortKey = (id: string) => digest(id).slice(0, 12)
-const readableKey = (id: string, label: string) => {
+const readableKey = (label: string) => {
   const safe = label.normalize('NFKC').replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '')
-  return `${Array.from(safe).slice(0, 30).join('') || '档案'}--${shortKey(id)}`
+  const name = Array.from(safe).slice(0, 48).join('') || '档案'
+  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name) ? '_' + name : name
 }
 
 async function namedDirectory(parent: string, id: string, create: boolean, label = id) {
   if (!await safeDirectory(parent, false)) return
   const legacy = join(parent, digest(id))
   if (await safeDirectory(legacy, false)) return legacy
-  const names = (await readdir(parent)).filter(name => name.endsWith('--' + shortKey(id)))
-  if (names.length > 1) throw new Error(`档案目录标识重复：${parent}`)
-  const path = join(parent, names[0] ?? readableKey(id, label))
-  if (await safeDirectory(path, create)) return path
+  const kind = basename(parent)
+  const manifest = kind === 'plans' ? 'plan.json' : kind === 'issues' ? 'issue.json' : '.project.json'
+  for (const name of await directories(parent)) {
+    const record = await safeRead<{ id?: string; organization?: string; project?: string }>(join(parent, name, manifest))
+    if (record && (manifest === '.project.json' ? JSON.stringify([record.organization, record.project]) : record.id) === id) return join(parent, name)
+  }
+  if (!create) return
+  const base = readableKey(label)
+  let name = base
+  for (let n = 2; await stat(join(parent, name)); n++) name = base + '-' + n
+  const path = join(parent, name)
+  if (await safeDirectory(path, true)) return path
 }
 
 async function projectDirectory(scope: Omit<ArchiveScope, 'planId'>, create: boolean) {
@@ -96,7 +104,7 @@ async function projectDirectory(scope: Omit<ArchiveScope, 'planId'>, create: boo
   if (await safeDirectory(org, false) && await safeDirectory(legacy, false)) return legacy
   const identity = { organization: scope.organization, project: scope.project }
   return lock(root, async () => {
-    const project = await namedDirectory(root, JSON.stringify([scope.organization, scope.project]), create, scope.projectName || scope.project)
+    const project = await namedDirectory(root, JSON.stringify([scope.organization, scope.project]), create, scope.projectName || (/^[a-f0-9-]{20,}$/i.test(scope.project) ? basename(workspace) : scope.project))
     if (!project) return
     const info = join(project, '.project.json')
     const existing = await safeRead<typeof identity>(info)
@@ -110,11 +118,10 @@ async function projectDirectory(scope: Omit<ArchiveScope, 'planId'>, create: boo
 
 async function directories(path: string) {
   if (!await safeDirectory(path, false)) return []
-  return (await readdir(path, { withFileTypes: true })).filter(entry => entry.isDirectory() && /(?:^[a-f0-9]{64}$|--[a-f0-9]{12}$)/.test(entry.name))
+  return (await readdir(path, { withFileTypes: true })).filter(entry => entry.isDirectory())
     .map(entry => entry.name).sort()
 }
 
-const matchesDirectory = (name: string, id: string) => name === digest(id) || name.endsWith('--' + shortKey(id))
 const archiveFileName = (type: Kind, version: number, format: 'json' | 'md', templateVersion?: number) =>
   `${templateFor(type, templateVersion).title}-v${version}.${format}`
 const validDocumentFile = (document: StoredDocument, format: 'json' | 'md') => Number.isSafeInteger(document.version) &&
@@ -127,11 +134,11 @@ async function rebuild(project: string, scope: Omit<ArchiveScope, 'planId'>) {
   for (const planKey of await directories(plans)) {
     const folder = join(plans, planKey)
     const plan = await safeRead<PlanManifest>(join(folder, 'plan.json'))
-    if (!plan || !matchesDirectory(planKey, plan.id)) continue
+    if (!plan) continue
     const issues = []
     for (const issueKey of await directories(join(folder, 'issues'))) {
       const manifest = await safeRead<IssueManifest>(join(folder, 'issues', issueKey, 'issue.json'))
-      if (manifest && matchesDirectory(issueKey, manifest.id)) issues.push({ ...manifest, folder: `plans/${planKey}/issues/${issueKey}` })
+      if (manifest) issues.push({ ...manifest, folder: `plans/${planKey}/issues/${issueKey}` })
     }
     rows.push({ ...plan, folder: `plans/${planKey}`, issues })
   }
@@ -143,6 +150,44 @@ async function rebuild(project: string, scope: Omit<ArchiveScope, 'planId'>) {
     throw error
   })
   if (JSON.stringify(previous) !== JSON.stringify(index)) await atomicJson(path, index)
+  // Keep historical paths valid while giving readers a named entry point outside legacy hash directories.
+  const root = join(await realpath(scope.root), 'docs', 'workbench')
+  if (relative(root, project).split(sep).some(part => /^[a-f0-9]{64}$/.test(part))) {
+    await lock(root, async () => {
+      const owner = '<!-- workbench-project ' + digest(scope.organization, scope.project) + ' -->'
+      const prefix = relative(root, project).split(sep).join('/')
+      const lines = [owner, '# 交付文档', '']
+      for (const plan of index.plans) {
+        lines.push('## ' + plan.name, '')
+        for (const issue of plan.issues) {
+          lines.push('### ' + [issue.reference, issue.title].filter(Boolean).join(' · '), '')
+          for (const doc of issue.documents) {
+            if (validDocumentFile(doc, 'md') || validDocumentFile(doc, 'json')) {
+              const url = (prefix + '/' + issue.folder + '/' + doc.file).split('/').map(encodeURIComponent).join('/')
+              lines.push('- [' + doc.file + '](<' + url + '>)')
+            }
+          }
+          lines.push('')
+        }
+      }
+      const content = lines.join('\n')
+      const base = readableKey(scope.projectName || basename(scope.root)) + '-交付文档'
+      for (let n = 1; ; n++) {
+        const path = join(root, base + (n > 1 ? '-' + n : '') + '.md')
+        const info = await stat(path)
+        if (!info) { await writeNew(path, content); break }
+        if (!info.isFile() || info.isSymbolicLink()) continue
+        const prior = await readFile(path, 'utf8')
+        if (!prior.startsWith(owner + '\n')) continue
+        if (prior !== content) {
+          const tmp = path + '.' + randomUUID() + '.tmp'
+          try { await writeFile(tmp, content, { flag: 'wx' }); await rename(tmp, path) }
+          finally { await rm(tmp, { force: true }) }
+        }
+        break
+      }
+    })
+  }
   return index
 }
 
@@ -358,7 +403,7 @@ export async function listIssueArchiveDocuments(scope: Omit<ArchiveScope, 'planI
   for (const key of await directories(plans)) {
     const folder = join(plans, key)
     const plan = await safeRead<PlanManifest>(join(folder, 'plan.json'))
-    if (!plan || !matchesDirectory(key, plan.id)) continue
+    if (!plan) continue
     const issue = await issueManifestAt(folder, id)
     if (!issue && !planContainsIssue(plan, id)) continue
     const documents = [

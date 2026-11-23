@@ -14,7 +14,7 @@ test('首份方案与调研轮次分开，修订只与同类文档对比', () =>
 })
 
 test('组合验收在两行共用，限定计划成员、同一对议题和已批准版本', () => {
-  const draft = ref => ({ proposal: '## 验收与回归\n### 组合验收 · ' + ref + '\n清空后按默认值回填', proposalVersion: 1 })
+  const draft = ref => ({ proposal: '## **五、验收与回归**\n### 1) 组合验收·' + ref + '\n清空后按默认值回填', proposalVersion: 1 })
   const row = (ref, peer, approved) => ({ reference: ref, issueId: ref, status: 'ready', drafts: [draft(peer)], finalizedVersion: approved ? 1 : undefined })
   const rows = [row('A', 'B', false), row('B', 'A', true), row('C', 'removed', true)]
   const fromA = sharedAcceptance(rows, 'A', true)

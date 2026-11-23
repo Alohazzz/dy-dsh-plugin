@@ -1,3 +1,4 @@
+import { lexer } from 'marked'
 import { researchSkill } from './research-skill.ts'
 import { sharedAcceptance } from './plan-review.ts'
 import { checkedQuestions, decodeQuestions, extractResearchDraft, researchSummary, type DraftQuestion } from './research-questions.ts'
@@ -44,7 +45,11 @@ async function collectDraft(row: SavedRow, work: Work, reply: string): Promise<R
   const { archive } = row
   const { feedback, requestId } = work
   if (!archive) return { ...decodeQuestions(reply), feedback }
-  const value = JSON.parse(reply.replace(/^\x60{3}(?:json)?\s*\r?\n([\s\S]*?)\r?\n\x60{3}\s*$/, '$1'))
+  const trimmed = reply.trim()
+  const tokens = trimmed.startsWith('{') ? [] : lexer(trimmed)
+  const block = tokens[0]
+  const fenced = tokens.length === 1 && block?.type === 'code' && (!block.lang || block.lang.toLowerCase() === 'json')
+  const value = JSON.parse(fenced ? block.text.trim() : trimmed)
   const { report, decisions, supersedes = [] } = value
   const questions = checkedQuestions(value.questions)
   if (typeof report !== 'string') throw new Error('调研回包缺少报告正文')

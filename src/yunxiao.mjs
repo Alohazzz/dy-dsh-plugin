@@ -1,3 +1,5 @@
+import { lexer } from 'marked'
+import { sectionName } from './markdown-format.mjs'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -92,27 +94,20 @@ function sessionPaths(agent, home) {
 function discussionSections(markdown, testOnly = false) {
   const sections = new Map()
   let current
-  let fence
-  for (const line of markdown.split(/\r?\n/)) {
-    const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1]
-    if (marker && !fence) fence = marker
-    else if (marker && marker[0] === fence[0] && marker.length >= fence.length &&
-      line.trim() === marker) fence = undefined
-    else if (!fence && /^#{1,2}\s+/.test(line)) {
-      const heading = /^##\s+(.+?)\s*#*\s*$/.exec(line)?.[1]
+  for (const token of lexer(markdown)) {
+    if (token.type === 'heading' && token.depth <= 2) {
+      const heading = token.depth === 2 ? sectionName(token.text) : ''
       const title = heading === '修改方案汇总' && !testOnly ? heading :
-        /^(影响范围与测试)(?:[（(]测试向[）)])?$/.exec(heading)?.[1]
+        /^(影响范围与测试)(?:\s*[（(]测试向[）)])?$/.exec(heading)?.[1]
       current = title ? [] : undefined
       if (title) {
         if (sections.has(title)) throw new Error(`discussion.md 包含重复章节「${title}」`)
         sections.set(title, current)
       }
-      continue
-    }
-    current?.push(line)
+    } else current?.push(token.raw)
   }
   return (testOnly ? ['影响范围与测试'] : ['修改方案汇总', '影响范围与测试']).map(title => {
-    const content = sections.get(title)?.join('\n').trim()
+    const content = sections.get(title)?.join('').trim()
     if (!content) throw new Error(`discussion.md 缺少「${title}」正文`)
     return `## ${title}\n\n${content}`
   })

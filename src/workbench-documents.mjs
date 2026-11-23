@@ -1,3 +1,4 @@
+import { sectionName } from './markdown-format.mjs'
 import { readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { lexer } from 'marked'
@@ -63,9 +64,9 @@ export function researchDocumentInstructions() {
   return [
     ...guidance,
     planWritingInstructions,
-    '按以下顺序写二级标题。',
-    '调研报告：' + templateFor('research').sections?.join('、') + '。',
-    '执行方案：' + templateFor('proposal').sections?.join('、') + '。',
+    '逐行照抄以下 Markdown 二级标题，保持顺序，不加章节编号。',
+    '调研报告：\n' + templateFor('research').sections?.map(name => '## ' + name).join('\n'),
+    '执行方案：\n' + templateFor('proposal').sections?.map(name => '## ' + name).join('\n'),
   ].join('\n\n')
 }
 
@@ -81,7 +82,7 @@ export function validateSections(file, markdown, expected) {
   let section
   for (const token of lexer(markdown)) {
     if (token.type === 'heading' && token.depth === 2) {
-      section = { name: token.text.trim(), hasBody: false }
+      section = { name: sectionName(token.text), hasBody: false }
       headings.push(section)
     } else if (section && token.type !== 'space' && token.raw.trim()) {
       section.hasBody = true
@@ -104,7 +105,7 @@ export function sectionBody(markdown, title) {
   const output = []
   let active = false
   for (const token of lexer(markdown)) {
-    if (token.type === 'heading' && token.depth === 2) active = token.text.trim() === title
+    if (token.type === 'heading' && token.depth === 2) active = sectionName(token.text) === title
     else if (active) output.push(token.raw)
   }
   return output.join('').trim()
@@ -119,7 +120,7 @@ export function includeBehaviorDifferences(testSection, differences) {
   const kept = []
   let found = false
   for (const token of lexer(testSection)) {
-    if (token.type === 'heading' && token.depth <= 3) replacing = token.depth === 3 && token.text.trim() === behaviorHeading
+    if (token.type === 'heading' && token.depth <= 3) replacing = token.depth === 3 && sectionName(token.text) === behaviorHeading
     if (replacing) found = true
     if (!replacing) kept.push(token.raw)
   }

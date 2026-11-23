@@ -460,6 +460,12 @@ export function apply(ctx: Context) {
       })
       return { sessionId: binding.sessionId }
     },
+    closeoutFiles(input: PlanKey & { id: string }) {
+      return workflow.closeoutFiles(planDirectory(input), input)
+    },
+    submitCloseout(input: PlanKey & { id: string; files: string[] }) {
+      return workflow.submitCloseout(planDirectory(input), input)
+    },
     archivePlanExecution(input: PlanKey & { id: string; commit?: string }) {
       return workflow.archiveExecution(planDirectory(input), input)
     },

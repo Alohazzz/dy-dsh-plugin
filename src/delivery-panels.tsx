@@ -291,6 +291,8 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           {dispatchErrors[issue.id] && <small className="dy-yx-error" role="alert">{dispatchErrors[issue.id]}</small>}
         </div></td>
         <td><div className="dy-plan-issue-actions">
+          {!closed && issue.sessionId && <button type="button" className="dy-yx-primary" disabled={busy}
+            title="提交本议题的代码和文档，回写云效" onClick={() => archive(issue)}>交付成果</button>}
           <button type="button" className="dy-delivery-link" onClick={() => documents(issue)}>过程文档</button>
           {row && (row.version > 0 || row.label === '调研失败') && <button className="dy-delivery-link" onClick={() => open(issue.id)}>
             {row.version ? reviewVersion(row.version, row.proposalVersion) : '查看失败原因'}</button>}
@@ -300,7 +302,6 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           {issue.sessionId && <button className="dy-delivery-link" onClick={() => openSession(issue.sessionId!)}>查看执行会话</button>}
           {issue.sessionId && (stage === 'ready' || stage === 'confirmed' || stage === 'submitted') &&
             <button className="dy-delivery-link" onClick={() => handoff(issue)}>审阅执行结果</button>}
-          {issue.sessionId && <button className="dy-delivery-link" onClick={() => archive(issue)}>归档执行成果</button>}
           {!closed && executionVersion !== undefined && (!issue.sessionId || issue.dispatchedVersion !== executionVersion) && <button className="dy-yx-primary" disabled={busy || !executionSupported || Boolean(executing)}
               onClick={() => execute(issue.id, executionVersion)}>
               {executing === issue.id ? '正在派发…' : issue.executionVersion ? '重试执行 v' + issue.executionVersion : '开始执行'}
@@ -349,28 +350,46 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
     </Modal>
   }
 
-  function ArchiveExecution({ scope, issue, close, saved }: { scope: PlanKey; issue: PlanIssue; close(): void; saved(): void }) {
-    const [commit, setCommit] = useState('')
-    const [error, setError] = useState('')
+  function IssueCloseout({ scope, issue, close, saved }: { scope: PlanKey; issue: PlanIssue; close(): void; saved(): void }) {
+    const input = { ...scope, id: issue.id }
+    const files = useRead<string[]>('closeoutFiles', input)
+    const preview = useRead<{ code: string; sections: string[]; receipts: unknown[] }>('preview', input)
+    const [selected, select] = useState<string[]>([])
+    const [body, edit] = useState<string>()
+    const [message, notify] = useState('')
+    const [error, fail] = useState('')
     const [busy, setBusy] = useState(false)
-    async function submit(event: ReactType.FormEvent) {
-      event.preventDefault()
-      setBusy(true); setError('')
+    async function run(action: 'commit' | 'publish' | 'summary') {
+      setBusy(true); fail(''); notify('')
       try {
-        await rpc('archivePlanExecution', { ...scope, id: issue.id, ...(commit.trim() && { commit: commit.trim() }) })
+        if (action === 'commit') {
+          const sha = await rpc<string>('submitCloseout', { ...input, files: selected })
+          notify('已提交 ' + sha.slice(0, 12)); select([]); files.retry()
+        } else if (action === 'summary') {
+          await rpc('archivePlanExecution', input); notify('执行小结已保存'); files.retry()
+        } else if (preview.value) {
+          const result = await rpc<{ error?: string }>('publish', { ...input, code: preview.value.code, sections: [body ?? preview.value.sections[0]] })
+          if (result.error) throw new Error(result.error)
+          notify('已回写云效'); preview.retry()
+        }
         saved()
-      } catch (failure) { setError(errorText(failure)) } finally { setBusy(false) }
+      } catch (e) { fail(errorText(e)); files.retry() } finally { setBusy(false) }
     }
-    return <Modal label="归档执行成果" busy={busy} close={close}>
-      <h2>归档执行成果</h2><p>{issue.reference} · {issue.title}</p>
-      <form onSubmit={submit}>
-        <p>确认执行会话中的小结后保存。已提交时，可同时关联带本议题编号的 Git 提交。</p>
-        <label>提交 SHA（可选）<input value={commit} spellCheck={false} onChange={event => setCommit(event.target.value)} /></label>
-        {error && <Problem error={error} />}
-        <div className="dy-yx-actions dy-delivery-footer"><button type="button" disabled={busy} onClick={close}>取消</button>
-          <button className="dy-yx-primary" disabled={busy}>{busy ? '保存中…' : '确认并归档'}</button></div>
-      </form>
-    </Modal>
+    return <section className="dy-delivery-card dy-delivery-section" aria-label="交付成果">
+      <header className="dy-yx-actions"><h3>{issue.reference} · 交付成果</h3><button disabled={busy} onClick={close}>收起</button></header>
+      <fieldset disabled={busy}><legend>提交代码和文档</legend>
+        {files.error ? <Problem error={files.error} retry={files.retry} /> : files.value?.length ? files.value.map(file =>
+          <div key={file}><label><input type="checkbox" checked={selected.includes(file)} onChange={e =>
+            select(e.target.checked ? [...selected, file] : selected.filter(f => f !== file))} /> {file}</label></div>) :
+          <p>{files.value ? '当前没有文件改动。' : '正在读取文件改动…'}</p>}
+        <button onClick={() => void run('summary')}>保存执行小结</button>
+        <button disabled={!selected.length} onClick={() => void run('commit')}>提交所选文件（{selected.length}）</button>
+      </fieldset>
+      {preview.error ? <Problem error={preview.error} retry={preview.retry} /> : preview.value && <fieldset disabled={busy || !!preview.value.receipts[0]}>
+        <legend>云效测试评论</legend><textarea aria-label="云效测试评论" rows={6} value={body ?? preview.value.sections[0]} onChange={e => edit(e.target.value)} />
+        <button onClick={() => void run('publish')}>{preview.value.receipts[0] ? '已回写云效' : '回写云效'}</button></fieldset>}
+      {error && <Problem error={error} />}{message && <p role="status">{message}</p>}
+    </section>
   }
 
   function PlanDetail({ scope, meta, revision, active, back, openMr, changed, openSession }: {
@@ -592,6 +611,7 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
           live={live} dispatchErrors={dispatchErrors}
           execute={execute} executing={executing} executionSupported={detail.executionSupported} remove={setRemoving} archive={setArchiving} handoff={setHandoffIssue} documents={setDocumentIssue} summaries={summaries}
           busy={busy} unavailable={!!(summaryError || batch.error)} legacy={legacy} closed={closed} open={setPreviewIssue} finalize={finalize} /></section>
+      {archiving && !closed && <IssueCloseout key={archiving.id} scope={scope} issue={archiving} close={() => setArchiving(undefined)} saved={changed} />}
       {detail.plan.delivery?.mr && <section className="dy-delivery-card dy-delivery-section" aria-label="计划完成报告">
         <div className="dy-yx-actions dy-plan-toolbar"><h3 ref={reportHeading} tabIndex={-1}>计划完成报告</h3>
           {report && <small>v{report.version} · {report.reportStatus === 'final' ? '终稿' : report.reportStatus === 'reviewed' ? '已审核' :
@@ -642,11 +662,6 @@ export function createDeliveryPanels(React: typeof ReactType, rpc: Rpc) {
       {removing && <RemoveIssue scope={scope} issue={removing} close={() => setRemoving(undefined)} removed={deferred => {
         setNotice((deferred ? '已记录延期 · ' : '已移出计划 · ') + removing.reference)
         setRemoving(undefined)
-        changed()
-      }} />}
-      {archiving && <ArchiveExecution scope={scope} issue={archiving} close={() => setArchiving(undefined)} saved={() => {
-        setNotice('已归档 · ' + archiving.reference)
-        setArchiving(undefined)
         changed()
       }} />}
       {modal === 'configure' && <Configure scope={scope} plan={detail.plan} close={() => setModal(undefined)} saved={done} />}

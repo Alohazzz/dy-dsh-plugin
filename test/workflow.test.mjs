@@ -176,9 +176,9 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
   assert.equal((await states()).stage, 'ready')
   const delta = 'A1 · 参数关闭且已有关系值，预期留空，当前显示原值，待验证。'
   const note = (await readFile(task.execution, 'utf8')).replace('## 与定稿的偏差\n正文',
-    '## 与定稿的偏差\n内部重构\n\n### 可观察行为差异\n' + delta)
+    '## 与定稿的偏差\n内部重构\n\n### **（一）可观察行为差异：**\n' + delta)
   await writeFile(task.execution, note)
-  await writeFile(task.discussion, '## 影响范围与测试\n保留首诊用例\n\n### 可观察行为差异\n过期场景\n\n### 其他测试\n保留边界用例')
+  await writeFile(task.discussion, '## ２．**影响范围与测试**：\n保留首诊用例\n\n### 1) 可观察行为差异\n过期场景\n\n### 其他测试\n保留边界用例')
   const handoff = await rpc('executionHandoff', { ...input, sessionId })
   assert.equal(handoff.value?.differences, delta, handoff.error)
   assert.ok(handoff.value.test.includes(delta))
@@ -187,6 +187,19 @@ test('执行 RPC 核对计划归属、最新定稿和检出分支，并移除旧
   assert.match((await rpc('executionHandoff', { ...input, sessionId: 'unrelated' })).error, /绑定/)
   assert.ok((await rpc('archivePlanExecution', input)).value?.execution)
   assert.equal((await states()).stage, 'confirmed')
+  git('config', 'user.name', 'Test')
+  git('config', 'user.email', 'test@example.invalid')
+  await writeFile(join(cwd, '代码.txt'), '实现')
+  await writeFile(join(cwd, '说明.md'), '说明')
+  await writeFile(join(cwd, 'other.txt'), '其他议题')
+  git('add', 'other.txt')
+  const changedFiles = (await rpc('closeoutFiles', input)).value
+  assert.ok(changedFiles.includes('说明.md'))
+  assert.ok(!changedFiles.some(file => file.startsWith('.dsh/')))
+  const submitted = await rpc('submitCloseout', { ...input, files: ['代码.txt', '说明.md'] })
+  assert.match(submitted.value || submitted.error, /^[a-f0-9]{40}$/)
+  assert.equal(git('diff', '--cached', '--name-only').toString().trim(), 'other.txt')
+  assert.equal((await states()).stage, 'submitted')
   assert.ok((await rpc('voidPlan', input)).value?.voidedAt)
   assert.match((await rpc('executePlanIssue', input)).error, /已作废/)
   assert.deepEqual((await rpc('plans', input)).value, [])
@@ -207,7 +220,7 @@ test('调研只在首次创建任务会话，修订复用会话并保留只读�
     wait: async () => {
       if (needsInput) return { reason: 'input-required' }
       const { requestId } = prompts.at(-1)
-      const text = ['DRAFT-' + requestId, '# 方案', '```json', '[]', '```'].join('\n')
+      const text = ['DRAFT-' + requestId, '# 方案', '~~~JSON', '[]', '~~~'].join('\n')
       return { reason: 'idle', output: { records: [{ event: { data: { message: { content: [{ type: 'text', text }] } } } }] } }
     },
   }, cwd, async ({ sessionId }) => {

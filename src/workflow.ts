@@ -223,6 +223,37 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     return scope
   }
 
+  async function closeoutCheckout(cwd: string, input: IssueKey & { planId: string }) {
+    const binding = await bindingFor(cwd, input)
+    if (!binding?.dispatched || !binding.cwd || !binding.branch) throw new Error('请核对本议题的执行会话和计划源分支')
+    if (await git(binding.cwd, ['branch', '--show-current']) !== binding.branch) throw new Error('请先检出计划源分支「' + binding.branch + '」')
+    return { cwd: binding.cwd, reference: binding.reference, branch: binding.branch }
+  }
+
+  async function closeoutFiles(cwd: string, input: IssueKey & { planId: string }) {
+    const checkout = await closeoutCheckout(cwd, input)
+    const changes = await git(checkout.cwd, ['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all'])
+    return changes.split('\0').filter(Boolean).map(line => line.slice(3)).filter(file => !file.split('/').includes('.dsh'))
+  }
+
+  async function submitCloseout(cwd: string, input: IssueKey & { planId: string; files: string[] }) {
+    const checkout = await closeoutCheckout(cwd, input)
+    return serial('closeout:' + checkout.cwd, async () => {
+      const available = await closeoutFiles(cwd, input)
+      if (!Array.isArray(input.files) || !input.files.length || input.files.some(file => !available.includes(file))) {
+        throw new Error('文件状态已变化，请刷新后选择本议题的改动')
+      }
+      await archiveExecution(cwd, input)
+      const args = ['--literal-pathspecs']
+      const untracked = (await git(checkout.cwd, [...args, 'ls-files', '--others', '--exclude-standard', '-z', '--', ...input.files])).split('\0').filter(Boolean)
+      if (untracked.length) await git(checkout.cwd, [...args, 'add', '--intent-to-add', '--', ...untracked])
+      await git(checkout.cwd, [...args, 'commit', '--only', '-m', checkout.reference + ' 提交议题代码和文档', '--', ...input.files])
+      const sha = await git(checkout.cwd, ['rev-parse', 'HEAD'])
+      await archiveExecution(cwd, { ...input, commit: sha })
+      return sha
+    })
+  }
+
   async function archiveExecution(cwd: string, input: IssueKey & { planId: string; commit?: string }) {
     const binding = await bindingFor(cwd, input)
     if (!binding?.dispatched || !binding.cwd) throw new Error('当前议题没有可归档的执行会话')
@@ -673,6 +704,6 @@ export function createWorkflow({ home, client, host, branchExists = async (cwd, 
     })
   }
 
-  return { executePlan, bindingFor, archiveExecution, executionProgress, archivedExecutionStage, executionDraftStatus, executionHandoff, preview, publish, transition, checkTransition, pendingTransition, plans, createPlan,
+  return { closeoutFiles, submitCloseout, executePlan, bindingFor, archiveExecution, executionProgress, archivedExecutionStage, executionDraftStatus, executionHandoff, preview, publish, transition, checkTransition, pendingTransition, plans, createPlan,
     allPlans, voidPlan, addToPlan, removeFromPlan, updateDelivery, withPlan }
 }

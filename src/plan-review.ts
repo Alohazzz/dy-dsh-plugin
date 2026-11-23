@@ -1,3 +1,4 @@
+import { sectionName } from './markdown-format.mjs'
 import { lexer } from 'marked'
 import type { ResearchRow } from './research-prototype.ts'
 
@@ -7,7 +8,7 @@ export function documentSections(markdown: string, depth: number) {
   let heading: string | undefined
   for (const token of lexer(markdown)) {
     if (token.type === 'heading' && token.depth <= depth) {
-      heading = token.depth === depth ? token.text.trim() : undefined
+      heading = token.depth === depth ? sectionName(token.text) : undefined
       if (heading) sections.set(heading, '')
     } else if (heading) sections.set(heading, sections.get(heading) + token.raw)
   }
@@ -46,8 +47,8 @@ export function sharedAcceptance(rows: ResearchRow[], issueId: string, approvedO
     const acceptance = documentSections(draft.proposal, 2).get('验收与回归')
     if (!acceptance) continue
     for (const [name, body] of documentSections(acceptance, 3)) {
-      if (!name.startsWith('组合验收 · ') || !body) continue
-      const related = name.slice('组合验收 · '.length).trim()
+      if (!/^组合验收\s*·\s*/.test(name) || !body) continue
+      const related = name.replace(/^组合验收\s*·\s*/, '').trim()
       if (related === row.reference || !rows.some(peer => peer.reference === related)) continue
       if (row.issueId !== issueId && related !== target.reference) continue
       if (result.some(item => item.body === body && [item.source, item.related].includes(related) &&

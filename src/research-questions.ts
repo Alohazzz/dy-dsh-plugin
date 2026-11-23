@@ -1,3 +1,4 @@
+import { lexer } from 'marked'
 import type { ResearchRow } from './research-prototype.ts'
 export type DraftQuestion = { question: string; recommended: string; alternatives: string[] }
 
@@ -18,10 +19,11 @@ export function extractResearchDraft(reply: string, marker: string): string | un
 }
 
 export function decodeQuestions(body: string): { markdown: string; questions: DraftQuestion[] } {
-  const block = /(?:^|\n)`{3}(?:json)?\s*\n(\[[\s\S]*?\])\s*\n`{3}\s*$/.exec(body)
-  if (!block) throw new Error('草稿缺少待确认项清单')
-  const items = checkedQuestions(JSON.parse(block[1]))
-  const markdown = body.slice(0, block.index).trim()
+  const tokens = lexer(body.trimEnd())
+  const block = tokens.at(-1)
+  if (block?.type !== 'code' || (block.lang && block.lang.toLowerCase() !== 'json')) throw new Error('草稿缺少待确认项清单')
+  const items = checkedQuestions(JSON.parse(block.text.trim()))
+  const markdown = tokens.slice(0, -1).map(token => token.raw).join('').trim()
   if (!markdown) throw new Error('草稿正文为空')
   return { markdown, questions: items }
 }
